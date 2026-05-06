@@ -23,9 +23,9 @@
 
 - **Language**: LuaJIT (Lua 5.1 compatible)
 - **Engine**: LÖVE 11.5+
-- **Bootstrap**: `main.lua` + `src.game`
+- **Bootstrap**: `main.lua` + `src/main.lua` (delegate → `src.scenes.play`)
 - **Hot Reload**: lurker + lume (watch เฉพาะ `src/**/*.lua`)
-- **Architecture**: Modular (World / Sim / Entities / Powers / UI / Render)
+- **Architecture**: Modular (`src/core/*`, `src/scenes/*`, `src/ui/*`, `src/utils/*`, `src/libraries/*`)
 
 ---
 
@@ -37,7 +37,7 @@
   1. input
   2. simulation tick
   3. entity updates
-  4. events/powers resolution
+  4. events resolution + god-intervention inputs (เช่น terraform brush)
   5. render prep
 - `love.draw()` วาดแบบ read-only จาก state ปัจจุบัน (ไม่แก้ logic state ใน draw)
 
@@ -123,31 +123,32 @@ WorldState = {
 
 ## 5) Module API Contracts (ต้องมีก่อนเขียนจริง)
 
-### `src/world.lua`
+### `src/core/world.lua`
 
 - `world.new(width, height, seed) -> WorldState`
-- `world.get_tile(world, gx, gy) -> Tile`
+- `world.get_tile(world, gx, gy) -> tile, index`
 - `world.set_tile_type(world, gx, gy, type_id)`
-- `world.brush(world, cx, cy, radius, painter_fn)`
+- `world.brush(world, cx, cy, radius, type_id) -> changed`
 
-### `src/entities.lua`
+### `src/core/entities.lua`
 
-- `entities.spawn(world, x, y, dna?) -> entity_id`
-- `entities.kill(world, entity_id, reason?)`
+- `entities.spawn(world, x, y, dna?, sex?, initial_age?) -> entity_id`
+- `entities.kill(world, entity_id, reason)`
 - `entities.update(world, dt)`
 
-### `src/sim.lua`
+### `src/core/sim.lua`
 
-- `sim.update(world, dt)` (internal fixed-step accumulator)
-- `sim.step(world, sim_dt)` (food grow, fire spread, reproduction checks)
+- `sim.new(config) -> sim_state`
+- `sim.update(sim_state, world, dt) -> steps`
+- `sim.step(sim_state, world, step_dt)` (ecosystem + entities update)
 
-### `src/powers.lua`
+### `src/core/terraform.lua`
 
-- `powers.cast(world, power_id, gx, gy, params?) -> ok, err`
+- `terraform.apply_brush_at_mouse(g) -> nil`
 
-### `src/pathing.lua` (Phase 2+)
+### `src/core/pathing.lua` (Phase 2+)
 
-- `pathing.request(world, from_gx, from_gy, to_gx, to_gy) -> path_id`
+- `pathing.request(...) -> path_id` (ยังไม่แยกเป็นไฟล์ในโค้ดปัจจุบัน; ใช้ steering + สแกนรอบตัวใน `src/core/entities.lua`)
 - `pathing.poll(path_id) -> ready, result`
 
 ---
@@ -170,16 +171,11 @@ Priority จากมากไปน้อย:
 
 ## 7) God Powers (MVP Scope)
 
-1. **Spawn**: เกิดยูนิต 1 ตัว/กลุ่มเล็ก
-2. **Rain**: เพิ่ม moisture ลด fire ในรัศมี
-3. **Smite**: ดาเมจจุดเดียว + knockback เล็กน้อย
+1. **Terraform Brush**: เปลี่ยน type ของ tile ภายใต้เมาส์แบบ radius (ผ่าน `src/core/terraform.lua`)
 
-ทุกพลังต้องมี:
-
-- `cost_faith`
-- `cooldown_sec`
-- `cast_radius`
-- visual feedback ขั้นต่ำ 1 อย่าง
+หมายเหตุ (MVP ตอนนี้):
+- ยังไม่มีโมดูล `powers.cast(...)` แบบรวมศูนย์
+- ไม่มีระบบ `cost/cooldown/cast_radius` ที่เป็นโครงสร้างเดียวกัน (brush config มาจาก state ของฉาก/เมนู)
 
 ---
 
@@ -231,13 +227,13 @@ Priority จากมากไปน้อย:
 | 2     | Entities + DNA + movement/pathing | spawn 500 entities ได้, state เปลี่ยนตามเงื่อนไข, ไม่ crash 10 นาที |
 | 3     | Ecosystem loop                    | food growth + eat + reproduce ครบ                                   |
 | 4     | Save/Load                         | save/load world เดิมได้, schema_version ใช้งานจริง                  |
-| 5     | God powers UI + stats             | เลือกพลัง/กดใช้ได้ครบ MVP, overlay สถิติอ่านง่าย                    |
+| 5     | Terraform controls UI + stats    | เลือกชนิด brush/ปรับเวลา/รีเซ็ตสถานการณ์ได้, overlay สถิติอ่านง่าย |
 
 ---
 
 ## 11) Phase 1 Task Breakdown (เริ่มทำทันที)
 
-1. [x] สร้าง `src/world.lua` + tile defs + world.new
+1. [x] สร้าง `src/core/world.lua` + tile defs + world.new
 2. [x] ทำระบบ index/grid utility (1D array indexing)
 3. [x] ทำ renderer แผนที่ด้วย `SpriteBatch`
 4. [x] ทำ camera: pan/zoom + bounds clamp
@@ -271,8 +267,8 @@ Priority จากมากไปน้อย:
 | Phase | สถานะ | หมายเหตุการยืนยัน |
 | ----- | ----- | ------------------ |
 | **1** | ปิดแล้ว | แผนที่เริ่มต้น **256×256** (`world.DEFAULT_MAP_TILES`), `SpriteBatch` ผ่าน `map_renderer`, camera pan/zoom (`play` + `camera`), terraform brush (`terraform` + `world.brush`), overlay มุมซ้ายล่าง (FPS, entities, sim/render ms, GC) |
-| **2** | ปิดแล้ว | Entities + DNA + อัปเดต/`spawn`/`kill` ใน `entities.lua`; state machine หลายโหมด; สถานการณ์ **`stress_500`** = 500 ยูนิตสำหรับ soak; เส้นทาง = steering ไม่ใช่ไฟล์ `pathing.lua` แยก |
-| **3** | ปิดแล้ว | ห่วงนิเวศใน `sim.step` (โตของอาหาร/ทรัพยากรไทล์) + กินหลายช่องทาง + `try_reproduce` ใน `entities.lua` |
+| **2** | ปิดแล้ว | Entities + DNA + อัปเดต/`spawn`/`kill` ใน `src/core/entities.lua`; state machine หลายโหมด; สถานการณ์ **`stress_500`** = 500 ยูนิตสำหรับ soak; เส้นทาง = steering ไม่ใช่ไฟล์ `pathing.lua` แยก |
+| **3** | ปิดแล้ว | ห่วงนิเวศใน `src/core/sim.lua` (`sim.step`) (โตของอาหาร/ทรัพยากรไทล์) + กินหลายช่องทาง + `try_reproduce` ใน `src/core/entities.lua` |
 
 ความละเอียด Phase 1 DoD เรื่อง “60 FPS เฉลี่ย ≥ 55” ขึ้นกับเครื่อง — ใช้ overlay วัดขณะเล่นได้
 

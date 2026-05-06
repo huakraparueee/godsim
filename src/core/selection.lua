@@ -108,9 +108,8 @@ function M.get_shelter_repro_status(g, shelter)
                     status.male_block = status.male_block or reason or (cooldown and "cooldown") or "age"
                 end
             elseif resident.sex == "female" then
-                local max_hp = (resident.dna and resident.dna.max_health) or 100
-                local carry_ok = (resident.hunger or 0) <= entity_config.REPRO_MAX_HUNGER
-                    and (resident.health or 0) >= (max_hp * entity_config.REPRO_MIN_HEALTH_RATIO)
+                local carry_ok = (resident.hunger or 0) >= entity_config.REPRO_MAX_HUNGER
+                    and (resident.health or 0) >= (entity_config.REPRO_MIN_HEALTH or 55)
                 if ok and (not cooldown) and age_ok and (not resident.pregnant) and carry_ok then
                     status.female_ready = status.female_ready + 1
                 else
@@ -118,7 +117,7 @@ function M.get_shelter_repro_status(g, shelter)
                         or reason
                         or (resident.pregnant and "pregnant")
                         or (cooldown and "cooldown")
-                        or ((resident.hunger or 0) > entity_config.REPRO_MAX_HUNGER and "hunger")
+                        or ((resident.hunger or 0) < entity_config.REPRO_MAX_HUNGER and "hunger")
                         or "health/age"
                 end
             end

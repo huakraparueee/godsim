@@ -7,18 +7,37 @@
 
 local entities = {}
 local world = require("src.core.world")
+local pathing = require("src.core.pathing")
+local blackboard = require("src.core.blackboard")
+local goap = require("src.core.goap")
 local config = require("src.data.config_entities")
 local entity_events = require("src.core.entities_events")
 local dna_ranges = require("src.data.config_dna_ranges")
 local requirements = require("src.core.entity_requirements")
-local find_shelter_by_id
 local CHILD_SURVIVAL_AGE_DAYS = 5 * 365
 local CHILD_HUNGER_RATE_FACTOR = 0.5
-local CHILD_STARVE_THRESHOLD_BONUS = 0.35
+local CHILD_STARVE_THRESHOLD_BONUS = 5
 local SHELTER_CONSUME_RATE_PREGNANT = 0.08
 local SHELTER_CONSUME_RATE_CHILD = 0.06
 local EMERGENCY_FRUIT_RATE = 0.08
 local EXPLORE_EVENT_COOLDOWN = 12
+local CONSTRUCTION_JOB_CLAIM_TTL_TICKS = 30
+local GOAP_REPLAN_MIN = 0.45
+local GOAP_REPLAN_JITTER = 0.55
+
+local function find_shelter_by_id(w, shelter_id)
+    if not shelter_id then
+        return nil
+    end
+    local buildings = w.buildings or {}
+    for i = 1, #buildings do
+        local b = buildings[i]
+        if b and b.kind == "shelter" and (not b.under_construction) and b.id == shelter_id then
+            return b
+        end
+    end
+    return nil
+end
 
 local function make_rng(seed)
     if love and love.math and love.math.newRandomGenerator then
@@ -234,8 +253,7 @@ local function can_carry_pregnancy(e)
     if not (e and e.alive and e.sex == "female") then
         return false
     end
-    local max_hp = (e.dna and e.dna.max_health) or 100
-    return e.hunger <= config.REPRO_MAX_HUNGER and e.health >= (max_hp * config.REPRO_MIN_HEALTH_RATIO)
+    return e.hunger >= config.REPRO_MAX_HUNGER and e.health >= (config.REPRO_MIN_HEALTH or 55)
 end
 
 local function has_nearby_building(w, x, y, min_spacing, kind_filter)
@@ -325,8 +343,77 @@ local function move_towards(e, tx, ty)
     return len
 end
 
+local function move_towards_nav(w, e, tx, ty, dt)
+    -- Keep this cheap: use direct steering when close, and only recompute path occasionally.
+    local direct_len = move_towards(e, tx, ty)
+    if direct_len <= 1.6 then
+        e._nav_path = nil
+        e._nav_path_i = nil
+        e._nav_target_gx = nil
+        e._nav_target_gy = nil
+        e._nav_repath_cd = 0
+        return direct_len
+    end
+
+    local gx = math.floor(e.x or 0)
+    local gy = math.floor(e.y or 0)
+    local tgx = math.floor(tx or 0)
+    local tgy = math.floor(ty or 0)
+
+    e._nav_repath_cd = math.max(0, (e._nav_repath_cd or 0) - (dt or 0))
+    local target_changed = (e._nav_target_gx ~= tgx) or (e._nav_target_gy ~= tgy)
+
+    if target_changed then
+        e._nav_path = nil
+        e._nav_path_i = nil
+        e._nav_target_gx = tgx
+        e._nav_target_gy = tgy
+        e._nav_repath_cd = 0
+    end
+
+    if (not e._nav_path) and e._nav_repath_cd <= 0 then
+        local id = pathing.request(w, gx, gy, tgx, tgy, { max_nodes = 6000 })
+        local ready, path, err = pathing.poll(id)
+        if ready and path then
+            e._nav_path = path
+            e._nav_path_i = 1
+        else
+            -- Fallback to direct steering if path fails.
+            e._nav_path = nil
+            e._nav_path_i = nil
+        end
+        -- Don't try again too frequently.
+        e._nav_repath_cd = 0.8 + ((e.id or 0) % 5) * 0.08
+    end
+
+    local path = e._nav_path
+    local pi = e._nav_path_i or 1
+    if not (path and path[pi]) then
+        return direct_len
+    end
+
+    -- Advance waypoint when close enough.
+    while path[pi] do
+        local wx = (path[pi].gx or tgx) + 0.5
+        local wy = (path[pi].gy or tgy) + 0.5
+        local d = move_towards(e, wx, wy)
+        if d <= 0.55 then
+            pi = pi + 1
+            e._nav_path_i = pi
+        else
+            break
+        end
+    end
+
+    return direct_len
+end
+
 local function ensure_job_queue(w)
-    w.jobs = w.jobs or {}
+    local board = blackboard.get(w)
+    w.jobs = (board and board.jobs) or w.jobs or {}
+    if board then
+        board.jobs = w.jobs
+    end
     w.stats.next_job_id = (w.stats and w.stats.next_job_id) or 0
 end
 
@@ -381,17 +468,27 @@ local function enqueue_construction_job(w, building)
             return
         end
     end
-    w.jobs[#w.jobs + 1] = {
+    local priority = 100
+    if building.kind == "shelter" then
+        priority = 120
+    elseif building.kind == "campfire" then
+        priority = 90
+    end
+    blackboard.add_job(w, {
         id = next_job_id(w),
         kind = "deliver_wood_construction",
         target_uid = building.uid,
         x = building.x,
         y = building.y,
-    }
+        priority = priority,
+        claimed_by = nil,
+        claim_expires_tick = nil,
+    })
 end
 
 local function cleanup_jobs(w)
     ensure_job_queue(w)
+    blackboard.cleanup_job_claims(w, w.tick or 0)
     local kept = {}
     for i = 1, #w.jobs do
         local job = w.jobs[i]
@@ -400,28 +497,42 @@ local function cleanup_jobs(w)
         end
     end
     w.jobs = kept
+    local board = blackboard.get(w)
+    if board then
+        board.jobs = w.jobs
+    end
 end
 
 local function find_best_construction_job_target(w, e)
     ensure_job_queue(w)
-    local best
+    local best_job
     local best_d2 = math.huge
+    local best_priority = -math.huge
+    local now_tick = w.tick or 0
     for i = 1, #w.jobs do
         local job = w.jobs[i]
-        if is_job_active(w, job) then
+        if is_job_active(w, job) and not blackboard.is_job_claimed_by_other(job, e.id, now_tick) then
             local b = find_building_by_uid(w, job.target_uid)
             if b then
                 local dx = (e.x or 0) - (b.x or 0)
                 local dy = (e.y or 0) - (b.y or 0)
                 local d2 = dx * dx + dy * dy
-                if d2 < best_d2 then
-                    best = b
+                local prio = job.priority or 0
+                if prio > best_priority or (prio == best_priority and d2 < best_d2) then
+                    best_job = job
+                    best_priority = prio
                     best_d2 = d2
                 end
             end
         end
     end
-    return best
+    if not best_job then
+        return nil
+    end
+    if not blackboard.claim_job(best_job, e.id, now_tick, CONSTRUCTION_JOB_CLAIM_TTL_TICKS) then
+        return nil
+    end
+    return find_building_by_uid(w, best_job.target_uid)
 end
 
 local function find_best_wood_tile(w, cx, cy, radius)
@@ -535,7 +646,7 @@ local function harvest_wolves(tile, amount)
 end
 
 local function eat_personal_food(e)
-    if not (e and (e.personal_food or 0) > 0 and (e.hunger or 0) > 0) then
+    if not (e and (e.personal_food or 0) > 0 and (e.hunger or 0) < 100) then
         return 0
     end
     local eaten = 1
@@ -543,24 +654,10 @@ local function eat_personal_food(e)
     if eaten <= 0 then
         return 0
     end
-    e.hunger = math.max(0, (e.hunger or 0) - eaten * (config.HUNGER_RECOVER_RATE or 1.6))
+    e.hunger = math.min(100, (e.hunger or 0) + eaten * (config.HUNGER_RECOVER_RATE or 30))
     local max_hp = (e.dna and e.dna.max_health) or 100
     e.health = math.min(max_hp, (e.health or 0) + eaten * (config.HEALTH_RECOVER_FROM_FOOD or 4.0))
     return eaten
-end
-
-find_shelter_by_id = function(w, shelter_id)
-    if not shelter_id then
-        return nil
-    end
-    local buildings = w.buildings or {}
-    for i = 1, #buildings do
-        local b = buildings[i]
-        if b and b.kind == "shelter" and (not b.under_construction) and b.id == shelter_id then
-            return b
-        end
-    end
-    return nil
 end
 
 local function rebuild_shelter_residents(w)
@@ -623,26 +720,6 @@ local function rebuild_shelter_residents(w)
             end
         end
     end
-end
-
-local function find_nearest_shelter_with_space(w, e)
-    local buildings = w.buildings or {}
-    local capacity = ((config.BUILD or {}).SHELTER_CAPACITY or 4)
-    local best
-    local best_d2 = math.huge
-    for i = 1, #buildings do
-        local b = buildings[i]
-        if b and b.kind == "shelter" and (not b.under_construction) and (b.residents and #b.residents < capacity) then
-            local dx = e.x - b.x
-            local dy = e.y - b.y
-            local d2 = dx * dx + dy * dy
-            if d2 < best_d2 then
-                best = b
-                best_d2 = d2
-            end
-        end
-    end
-    return best
 end
 
 local function shelter_sex_counts(w, shelter)
@@ -850,35 +927,6 @@ local function shelter_has_pregnant_resident(w, shelter)
     return false
 end
 
-local function find_support_target_shelter(w, e)
-    local buildings = w.buildings or {}
-    local trigger_stock = ((config.BUILD or {}).SHELTER_SUPPORT_TRIGGER_STOCK or 1.2)
-    local best
-    local best_d2 = math.huge
-    for i = 1, #buildings do
-        local b = buildings[i]
-        if b and b.kind == "shelter" and (not b.under_construction) and (b.food_stock or 0) < trigger_stock then
-            local has_resident = true
-            if has_resident then
-                local need_score = trigger_stock - (b.food_stock or 0)
-                if shelter_has_pregnant_resident(w, b) then
-                    need_score = need_score + 0.6
-                end
-            local dx = e.x - b.x
-            local dy = e.y - b.y
-            local d2 = dx * dx + dy * dy
-                -- prioritize urgent shelters (pregnant resident / lower stock), then distance.
-                local adjusted_d2 = d2 / math.max(0.2, need_score)
-            if adjusted_d2 < best_d2 then
-                best = b
-                    best_d2 = adjusted_d2
-                end
-            end
-        end
-    end
-    return best
-end
-
 local function find_wood_target_building(w, e)
     local buildings = w.buildings or {}
     local trigger_stock = ((config.BUILD or {}).SHELTER_WOOD_TRIGGER_STOCK or 0.9)
@@ -906,6 +954,57 @@ local function find_wood_target_building(w, e)
         end
     end
     return best
+end
+
+local function choose_support_plan(w, e, own_shelter, construction_target, wood_shelter)
+    local build_cfg = config.BUILD or {}
+    local own_max_food_stock = build_cfg.SHELTER_MAX_FOOD_STOCK or 100
+    local own_max_wood_stock = build_cfg.SHELTER_MAX_WOOD_STOCK or 100
+    local own_trigger_stock = build_cfg.SHELTER_SUPPORT_TRIGGER_STOCK or 1.2
+    local now_tick = w.tick or 0
+
+    e.goap_replan_cd = math.max(0, (e.goap_replan_cd or 0))
+    local needs_replan = (not e.goap_plan) or e.goap_replan_cd <= 0
+    if e.goap_plan and e.goap_plan.tick and (now_tick - e.goap_plan.tick) > 90 then
+        needs_replan = true
+    end
+    if not needs_replan then
+        return e.goap_plan
+    end
+
+    local food_needs = false
+    local wood_needs = false
+    if own_shelter then
+        local food_stock = own_shelter.food_stock or 0
+        local wood_stock = own_shelter.wood_stock or 0
+        local food_low = food_stock < own_trigger_stock
+        local food_not_full = food_stock < own_max_food_stock
+        local wood_not_full = wood_stock < own_max_wood_stock
+        food_needs = food_low or (food_not_full and not wood_shelter)
+        wood_needs = wood_not_full or (construction_target ~= nil)
+    end
+    if construction_target then
+        wood_needs = true
+    end
+
+    local plan = goap.plan_support({
+        carrying_food = e.carrying_food or 0,
+        carrying_wood = e.carrying_wood or 0,
+        needs_food_delivery = food_needs,
+        needs_wood_delivery = wood_needs,
+        -- Slight preference for construction logistics.
+        food_utility = food_needs and 2.2 or 0.0,
+        wood_utility = wood_needs and (construction_target and 3.2 or 2.0) or 0.0,
+        food_cost = own_shelter and 1.1 or 1.8,
+        wood_cost = construction_target and 0.9 or 1.3,
+    })
+
+    if plan then
+        plan.tick = now_tick
+    end
+    e.goap_plan = plan
+    e.goap_replan_cd = GOAP_REPLAN_MIN + (rand01() * GOAP_REPLAN_JITTER)
+    return plan
 end
 
 local function try_finish_construction(w, b, actor_name)
@@ -980,14 +1079,12 @@ local function try_rest_at_campfire(w, e, dt)
     if not (w and e and e.alive) then
         return false
     end
-    if (e.hunger or 0) >= config.EAT_TRIGGER_HUNGER then
+    if (e.hunger or 0) <= config.EAT_TRIGGER_HUNGER then
         return false
     end
 
     local build_cfg = config.BUILD or {}
-    local max_hp = (e.dna and e.dna.max_health) or 100
-    local health_ratio = (e.health or 0) / math.max(1, max_hp)
-    local needs_rest = (not e.home_shelter_id) or health_ratio < (build_cfg.CAMPFIRE_REST_HEALTH_RATIO or 0.75)
+    local needs_rest = (not e.home_shelter_id) or (e.health or 0) < (build_cfg.CAMPFIRE_REST_HEALTH or 75)
     if not needs_rest then
         return false
     end
@@ -999,7 +1096,7 @@ local function try_rest_at_campfire(w, e, dt)
 
     local use_radius = build_cfg.CAMPFIRE_USE_RADIUS or 3.0
     if distance > use_radius then
-        move_towards(e, campfire.x, campfire.y)
+        move_towards_nav(w, e, campfire.x, campfire.y, dt)
         e.state = "SeekCampfire"
         return true
     end
@@ -1007,7 +1104,7 @@ local function try_rest_at_campfire(w, e, dt)
     e.vx = 0
     e.vy = 0
     e.health = math.min(max_hp, (e.health or 0) + ((build_cfg.CAMPFIRE_HEALTH_RECOVER or 2.0) * dt))
-    e.hunger = math.max(0, (e.hunger or 0) - ((build_cfg.CAMPFIRE_HUNGER_RECOVER or 0.025) * dt))
+    e.hunger = math.min(100, (e.hunger or 0) + ((build_cfg.CAMPFIRE_HUNGER_RECOVER or 5.0) * dt))
     local profile = get_dna_profile(e.sex)
     e.knowledge = clamp((e.knowledge or 0) + ((build_cfg.CAMPFIRE_KNOWLEDGE_GAIN or 0.03) * dt), profile.knowledge.min, profile.knowledge.max)
     e.state = "RestAtCampfire"
@@ -1070,7 +1167,7 @@ function entities.spawn(w, x, y, dna, sex, initial_age)
         vx = 0,
         vy = 0,
         age = 0,
-        hunger = 0,
+        hunger = 100,
         health = entity_dna.max_health,
         state = "Wander",
         sex = sx,
@@ -1128,10 +1225,8 @@ function entities.try_build_campfires(w, dt)
             e.build_cooldown = math.max(0, (e.build_cooldown or 0) - dt)
             local can_build = requirements.can_do("build_campfire", e)
             if can_build and (e.build_cooldown or 0) <= 0 then
-                local max_hp = (e.dna and e.dna.max_health) or 100
-                local health_ratio = (e.health or 0) / math.max(1, max_hp)
-                local hunger_ok = (e.hunger or 0) <= (build_cfg.CAMPFIRE_MAX_HUNGER or 0.65)
-                local health_ok = health_ratio >= (build_cfg.CAMPFIRE_MIN_HEALTH_RATIO or 0.4)
+                local hunger_ok = (e.hunger or 0) >= (build_cfg.CAMPFIRE_MAX_HUNGER or 45)
+                local health_ok = (e.health or 0) >= (build_cfg.CAMPFIRE_MIN_HEALTH or 40)
                 local nearby_campfire = find_nearest_campfire(w, e, build_cfg.CAMPFIRE_NEED_RANGE or 12.0, false)
                 if hunger_ok and health_ok and (not nearby_campfire) and not has_nearby_building(w, e.x, e.y, min_spacing) then
                     local buildings = w.buildings
@@ -1182,10 +1277,8 @@ function entities.try_build_shelters(w, dt)
             if can_build
                 and (e.shelter_cooldown or 0) <= 0
                 and homeless_need > 0 then
-                local max_hp = (e.dna and e.dna.max_health) or 100
-                local health_ratio = (e.health or 0) / math.max(1, max_hp)
-                local hunger_ok = (e.hunger or 0) <= (build_cfg.SHELTER_MAX_HUNGER or 0.55)
-                local health_ok = health_ratio >= (build_cfg.SHELTER_MIN_HEALTH_RATIO or 0.55)
+                local hunger_ok = (e.hunger or 0) >= (build_cfg.SHELTER_MAX_HUNGER or 45)
+                local health_ok = (e.health or 0) >= (build_cfg.SHELTER_MIN_HEALTH or 55)
                 local build_x, build_y = find_shelter_build_site(w, e, min_spacing)
                 if hunger_ok and health_ok and build_x and build_y then
                     local buildings = w.buildings
@@ -1378,7 +1471,7 @@ function entities.try_reproduce(w, dt)
                     local fertility_m = ((chosen.dna and chosen.dna.fertility_rate) or 0.3) * age_fertility_factor(chosen)
                     local fertility_f = ((f.dna and f.dna.fertility_rate) or 0.3) * age_fertility_factor(f)
                     local health_factor = math.min(1.0, math.max(0.15, (f.health / math.max(1, ((f.dna and f.dna.max_health) or 100)))))
-                    local hunger_factor = 1.0 - math.min(0.7, f.hunger)
+                    local hunger_factor = math.max(0.35, math.min(1.0, (f.hunger or 0) / 100))
                     local chance = math.max(0.45, math.min(0.95, ((fertility_m + fertility_f) * 0.5) * health_factor * hunger_factor))
                     if rand01() <= chance then
                         f.pregnant = true
@@ -1423,11 +1516,12 @@ function entities.update(w, dt)
             if (e.age or 0) < CHILD_SURVIVAL_AGE_DAYS then
                 hunger_rate = hunger_rate * CHILD_HUNGER_RATE_FACTOR
             end
-            e.hunger = e.hunger + (hunger_rate * dt)
+            e.hunger = math.max(0, e.hunger - (hunger_rate * dt))
             e.explore_event_cooldown = math.max(0, (e.explore_event_cooldown or 0) - dt)
+            e.goap_replan_cd = math.max(0, (e.goap_replan_cd or 0) - dt)
             e.personal_food = math.min(config.PERSONAL_FOOD_CAPACITY or 2, math.floor(e.personal_food or 0))
             local stored_eat_trigger = e.home_shelter_id and config.EAT_TRIGGER_HUNGER or (config.HOMELESS_EAT_TRIGGER_HUNGER or config.EAT_TRIGGER_HUNGER)
-            if e.hunger >= stored_eat_trigger and eat_personal_food(e) > 0 then
+            if e.hunger <= stored_eat_trigger and eat_personal_food(e) > 0 then
                 e.state = "EatStoredFood"
             end
             e.wander_timer = e.wander_timer - dt
@@ -1440,10 +1534,10 @@ function entities.update(w, dt)
                     end
                 end
                 e.gestation_timer = math.max(0, (e.gestation_timer or 0) - dt)
-                e.hunger = e.hunger + (config.HUNGER_RATE * 0.35 * dt)
+                e.hunger = math.max(0, e.hunger - (config.HUNGER_RATE * 0.35 * dt))
                 local home = find_shelter_by_id(w, e.home_shelter_id)
                 if home then
-                    local d_home = move_towards(e, home.x, home.y)
+                    local d_home = move_towards_nav(w, e, home.x, home.y, dt)
                     if d_home <= 0.9 then
                         e.vx = 0
                         e.vy = 0
@@ -1474,7 +1568,7 @@ function entities.update(w, dt)
                                 consume = consume + emergency_eat
                             end
                         end
-                        e.hunger = math.max(0, e.hunger - consume * config.HUNGER_RECOVER_RATE)
+                        e.hunger = math.min(100, e.hunger + consume * config.HUNGER_RECOVER_RATE)
                         e.state = "StayHomePregnant"
                     else
                         -- While returning home, allow small emergency fruit intake nearby.
@@ -1497,7 +1591,7 @@ function entities.update(w, dt)
                             local emergency_eat = math.min(tile.apple_fruit or 0, EMERGENCY_FRUIT_RATE * dt)
                             tile.apple_fruit = math.max(0, (tile.apple_fruit or 0) - emergency_eat)
                             tile.food = tile.apple_fruit
-                            e.hunger = math.max(0, e.hunger - emergency_eat * config.HUNGER_RECOVER_RATE)
+                            e.hunger = math.min(100, e.hunger + emergency_eat * config.HUNGER_RECOVER_RATE)
                         end
                         e.state = "GoHomePregnant"
                     end
@@ -1524,13 +1618,13 @@ function entities.update(w, dt)
                     end
                     if best_idx then
                         local tx, ty = world.to_grid(w, best_idx)
-                        local len = move_towards(e, tx, ty)
+                        local len = move_towards_nav(w, e, tx, ty, dt)
                         local tile = w.tiles[best_idx]
                         if len < 0.9 and tile and (tile.apple_fruit or 0) > 0 then
                             local eaten = math.min(tile.apple_fruit, EMERGENCY_FRUIT_RATE * dt)
                             tile.apple_fruit = tile.apple_fruit - eaten
                             tile.food = tile.apple_fruit
-                            e.hunger = math.max(0, e.hunger - eaten * config.HUNGER_RECOVER_RATE)
+                            e.hunger = math.min(100, e.hunger + eaten * config.HUNGER_RECOVER_RATE)
                             e.state = "PregnantForage"
                         else
                             e.state = "PregnantSeekFood"
@@ -1567,7 +1661,7 @@ function entities.update(w, dt)
             if home_locked then
                 local locked_home = find_shelter_by_id(w, e.home_shelter_id)
                 if locked_home then
-                    local d_home = move_towards(e, locked_home.x, locked_home.y)
+                    local d_home = move_towards_nav(w, e, locked_home.x, locked_home.y, dt)
                     if d_home <= 0.9 then
                         e.vx = 0
                         e.vy = 0
@@ -1596,7 +1690,7 @@ function entities.update(w, dt)
                                 consume = consume + emergency_eat
                             end
                         end
-                        e.hunger = math.max(0, e.hunger - consume * config.HUNGER_RECOVER_RATE)
+                        e.hunger = math.min(100, e.hunger + consume * config.HUNGER_RECOVER_RATE)
                         e.state = "StayHomeChild"
                     else
                         e.state = "GoHomeChild"
@@ -1622,7 +1716,7 @@ function entities.update(w, dt)
             local doing_support = campfire_resting
             if not (e.sex == "female" and e.pregnant) and (not home_locked) and (not campfire_resting) then
                 local self_eat_trigger = e.home_shelter_id and config.EAT_TRIGGER_HUNGER or (config.HOMELESS_EAT_TRIGGER_HUNGER or config.EAT_TRIGGER_HUNGER)
-                local hungry_for_self = e.hunger >= self_eat_trigger
+                local hungry_for_self = e.hunger <= self_eat_trigger
                 local own_shelter = find_shelter_by_id(w, e.home_shelter_id)
                 if not hungry_for_self then
                     local own_trigger_stock = ((config.BUILD or {}).SHELTER_SUPPORT_TRIGGER_STOCK or 1.2)
@@ -1633,6 +1727,7 @@ function entities.update(w, dt)
                     local food_low = own_shelter and (own_shelter.food_stock or 0) < own_trigger_stock
                     local food_not_full = own_shelter and (own_shelter.food_stock or 0) < own_max_food_stock
                     local own_wood_not_full = own_shelter and (own_shelter.wood_stock or 0) < own_max_wood_stock
+                    local support_plan = choose_support_plan(w, e, own_shelter, construction_target, wood_shelter)
 
                     -- For non-construction periods, keep topping up own shelter wood
                     -- instead of stopping around low trigger values.
@@ -1640,7 +1735,16 @@ function entities.update(w, dt)
                         wood_shelter = own_shelter
                     end
 
-                    if own_shelter and (not construction_target) and food_not_full and own_wood_not_full then
+                    if support_plan and support_plan.intent == "food" and own_shelter then
+                        support_shelter = own_shelter
+                        if (e.carrying_wood or 0) > 0 then
+                            wood_shelter = own_shelter
+                        end
+                    elseif support_plan and support_plan.intent == "wood" then
+                        if (not wood_shelter) and own_shelter then
+                            wood_shelter = own_shelter
+                        end
+                    elseif own_shelter and (not construction_target) and food_not_full and own_wood_not_full then
                         -- Idle rule: keep both stocks full; choose the emptier one first.
                         local food_ratio = (own_shelter.food_stock or 0) / math.max(1, own_max_food_stock)
                         local wood_ratio = (own_shelter.wood_stock or 0) / math.max(1, own_max_wood_stock)
@@ -1668,7 +1772,7 @@ function entities.update(w, dt)
                     if support_shelter and requirements.can_do("deliver_food", e) then
                         doing_support = true
                         if (e.carrying_food or 0) > 0 then
-                            local d_shelter = move_towards(e, support_shelter.x, support_shelter.y)
+                            local d_shelter = move_towards_nav(w, e, support_shelter.x, support_shelter.y, dt)
                             if d_shelter <= 1.0 then
                                 local max_food_stock = ((config.BUILD or {}).SHELTER_MAX_FOOD_STOCK or 100)
                                 local current_food = support_shelter.food_stock or 0
@@ -1723,7 +1827,7 @@ function entities.update(w, dt)
                             local target_idx = use_wolf and best_wolf_idx or (use_hunt and best_hunt_idx or best_idx)
                             if target_idx then
                                 local tx, ty = world.to_grid(w, target_idx)
-                                local len = move_towards(e, tx, ty)
+                                local len = move_towards_nav(w, e, tx, ty, dt)
                                 local tile = w.tiles[target_idx]
                                 if len < 0.9 and use_wolf and tile and (tile.wolves or 0) >= min_wolves then
                                     local hunted = harvest_wolves(tile, math.min(tile.wolves or 0, 0.12))
@@ -1767,7 +1871,7 @@ function entities.update(w, dt)
                     if (not doing_support) and wood_shelter and requirements.can_do("cut_tree", e) then
                         doing_support = true
                         if (e.carrying_wood or 0) > 0 then
-                            local d_wood_shelter = move_towards(e, wood_shelter.x, wood_shelter.y)
+                            local d_wood_shelter = move_towards_nav(w, e, wood_shelter.x, wood_shelter.y, dt)
                             if d_wood_shelter <= 1.0 then
                                 local delivered_wood = 0
                                 if wood_shelter.under_construction then
@@ -1818,23 +1922,25 @@ function entities.update(w, dt)
                             end
                             if best_idx then
                                 local tx, ty = world.to_grid(w, best_idx)
-                                local len = move_towards(e, tx, ty)
+                                local len = move_towards_nav(w, e, tx, ty, dt)
                                 local tile = w.tiles[best_idx]
                                 if len < 0.9 and tile then
                                     local cut = 0
-                                    if best_kind == "pine" and (tile.pine_wood or 0) > 0 then
-                                        cut = math.min(tile.pine_wood, 1)
+                                    if best_kind == "pine" and (tile.pine_wood or 0) >= 1 then
+                                        cut = 1
                                         tile.pine_wood = tile.pine_wood - cut
-                                    elseif (tile.apple_wood or 0) > 0 then
-                                        cut = math.min(tile.apple_wood, 1)
+                                    elseif (tile.apple_wood or 0) >= 1 then
+                                        cut = 1
                                         tile.apple_wood = tile.apple_wood - cut
                                     end
-                                    if cut > 0 then
-                                        e.carrying_wood = (e.carrying_wood or 0) + cut
+                                    if cut >= 1 then
+                                        -- Wood hauling rule: harvest exactly 1 unit, then deliver.
+                                        e.carrying_wood = 1
                                         requirements.grant_knowledge_for_event("cut_tree", e)
                                         entity_events.cut_tree(w, e.name, cut, best_kind)
                                         e.state = "CutTree"
                                     else
+                                        -- Avoid partial cuts; keep searching until a full unit is available.
                                         e.state = "SeekWood"
                                     end
                                 else
@@ -1849,7 +1955,7 @@ function entities.update(w, dt)
             -- Seek and consume food from the best nearby tile when hungry.
             local self_eat_trigger = e.home_shelter_id and config.EAT_TRIGGER_HUNGER or (config.HOMELESS_EAT_TRIGGER_HUNGER or config.EAT_TRIGGER_HUNGER)
             local wants_personal_food = (not e.home_shelter_id) and math.floor(e.personal_food or 0) < (config.PERSONAL_FOOD_CAPACITY or 2)
-            if (e.hunger >= self_eat_trigger or wants_personal_food) and (not doing_support) and not (e.sex == "female" and e.pregnant) and (not home_locked) then
+            if (e.hunger <= self_eat_trigger or wants_personal_food) and (not doing_support) and not (e.sex == "female" and e.pregnant) and (not home_locked) then
                 local best_idx
                 local best_food = 0
                 local best_hunt_idx
@@ -1908,7 +2014,7 @@ function entities.update(w, dt)
                     if len < 0.9 and use_wolf and tile and (tile.wolves or 0) >= min_wolves then
                         local hunted = harvest_wolves(tile, math.min(tile.wolves or 0, 0.10))
                         local meat = hunted * (resources.WOLF_FOOD_YIELD or 5.0)
-                        e.hunger = math.max(0, e.hunger - meat * config.HUNGER_RECOVER_RATE)
+                        e.hunger = math.min(100, e.hunger + meat * config.HUNGER_RECOVER_RATE)
                         local max_hp = (e.dna and e.dna.max_health) or 100
                         e.health = math.min(max_hp, e.health + meat * config.HEALTH_RECOVER_FROM_FOOD)
                         requirements.grant_knowledge_for_event("hunt_wolf", e)
@@ -1917,7 +2023,7 @@ function entities.update(w, dt)
                     elseif len < 0.9 and use_hunt and tile and (tile.wildlife or 0) >= min_wildlife then
                         local hunted = harvest_rabbits(tile, math.min(tile.wildlife or 0, 0.35))
                         local meat = hunted * (resources.WILDLIFE_FOOD_YIELD or 2.4)
-                        e.hunger = math.max(0, e.hunger - meat * config.HUNGER_RECOVER_RATE)
+                        e.hunger = math.min(100, e.hunger + meat * config.HUNGER_RECOVER_RATE)
                         local max_hp = (e.dna and e.dna.max_health) or 100
                         e.health = math.min(max_hp, e.health + meat * config.HEALTH_RECOVER_FROM_FOOD)
                         requirements.grant_knowledge_for_event("hunt_wildlife", e)
@@ -1928,12 +2034,12 @@ function entities.update(w, dt)
                         local personal_food = math.floor(e.personal_food or 0)
                         local personal_space = math.max(0, personal_capacity - personal_food)
                         local taken = math.min(tile.apple_fruit, 1)
-                        local eaten = ((e.hunger or 0) >= self_eat_trigger) and 1 or 0
+                        local eaten = ((e.hunger or 0) <= self_eat_trigger) and 1 or 0
                         local stored = (eaten <= 0 and personal_space > 0) and 1 or 0
                         tile.apple_fruit = tile.apple_fruit - taken
                         tile.food = tile.apple_fruit
                         e.personal_food = math.min(personal_capacity, personal_food + stored)
-                        e.hunger = math.max(0, e.hunger - eaten * config.HUNGER_RECOVER_RATE)
+                        e.hunger = math.min(100, e.hunger + eaten * config.HUNGER_RECOVER_RATE)
                         local max_hp = (e.dna and e.dna.max_health) or 100
                         e.health = math.min(max_hp, e.health + eaten * config.HEALTH_RECOVER_FROM_FOOD)
                         e.state = stored > 0 and "ForageFood" or "Eat"
@@ -1951,7 +2057,7 @@ function entities.update(w, dt)
                         end
                     end
                     if e.explore_target_x and e.explore_target_y then
-                        local distance = move_towards(e, e.explore_target_x, e.explore_target_y)
+                        local distance = move_towards_nav(w, e, e.explore_target_x, e.explore_target_y, dt)
                         if distance <= 1.0 then
                             e.explore_target_x = nil
                             e.explore_target_y = nil
@@ -1967,55 +2073,28 @@ function entities.update(w, dt)
 
             try_wolf_attack(w, e, dt)
 
-            if e.hunger > 0.6 then
-                local damage = (e.hunger - 0.6) * config.HEALTH_DECAY_FROM_HUNGER * dt
+            if e.hunger < 40 then
+                local damage = (40 - e.hunger) * config.HEALTH_DECAY_FROM_HUNGER * dt
                 e.health = math.max(0, e.health - damage)
             end
 
             -- Slow attribute drift: hard hunger weakens strength, living age increases knowledge.
             local profile = get_dna_profile(e.sex)
             local strength_loss = 0
-            if e.hunger > 0.6 then
-                strength_loss = ((e.hunger - 0.6) * 0.08 * dt)
+            if e.hunger < 40 then
+                strength_loss = ((40 - e.hunger) * 0.0008 * dt)
             end
             e.strength = clamp((e.strength or ((e.dna and e.dna.strength) or profile.strength.default)) - strength_loss, profile.strength.min, profile.strength.max)
             e.knowledge = clamp((e.knowledge or ((e.dna and e.dna.knowledge) or profile.knowledge.default)) + (0.02 * dt), profile.knowledge.min, profile.knowledge.max)
 
             if e.wander_timer <= 0 and (not doing_support) and not (e.sex == "female" and e.pregnant) and (not home_locked) then
-                local wander_roll = rand01()
-                if wander_roll <= 0.05 then
-                    local angle = (love.math and love.math.random and love.math.random()) or math.random()
-                    angle = angle * math.pi * 2
-                    e.vx = math.cos(angle)
-                    e.vy = math.sin(angle)
-                    e.wander_timer = 0.6 + (((love.math and love.math.random and love.math.random()) or math.random()) * 1.4)
-                    if e.state ~= "Eat" and e.state ~= "SeekFood" then
-                        e.state = "Wander"
-                    end
-                else
-                    local home = find_shelter_by_id(w, e.home_shelter_id)
-                    if home then
-                        local d_home = move_towards(e, home.x, home.y)
-                        if d_home <= 0.9 then
-                            e.vx = 0
-                            e.vy = 0
-                            if e.state ~= "Eat" and e.state ~= "SeekFood" then
-                                e.state = "StayHome"
-                            end
-                        else
-                            if e.state ~= "Eat" and e.state ~= "SeekFood" then
-                                e.state = "GoHome"
-                            end
-                        end
-                    else
-                        e.vx = 0
-                        e.vy = 0
-                        if e.state ~= "Eat" and e.state ~= "SeekFood" then
-                            e.state = "Idle"
-                        end
-                    end
-                    e.wander_timer = 0.4 + (((love.math and love.math.random and love.math.random()) or math.random()) * 0.8)
+                -- Idle event/state: when no active work remains, stand still.
+                e.vx = 0
+                e.vy = 0
+                if e.state ~= "Eat" and e.state ~= "SeekFood" then
+                    e.state = "Idle"
                 end
+                e.wander_timer = 0.4 + (((love.math and love.math.random and love.math.random()) or math.random()) * 0.8)
             end
 
             local speed = (e.dna and e.dna.move_speed) or 24
@@ -2026,14 +2105,14 @@ function entities.update(w, dt)
 
             local starve_threshold = config.STARVE_THRESHOLD
             if (e.age or 0) < CHILD_SURVIVAL_AGE_DAYS then
-                starve_threshold = starve_threshold + CHILD_STARVE_THRESHOLD_BONUS
+                starve_threshold = math.max(0, starve_threshold - CHILD_STARVE_THRESHOLD_BONUS)
             end
 
             if e.age >= config.MAX_AGE then
                 entities.kill(w, e.id, "old_age")
             elseif e.health <= 0 then
                 entities.kill(w, e.id, "starvation")
-            elseif e.hunger >= starve_threshold then
+            elseif e.hunger <= starve_threshold then
                 entities.kill(w, e.id, "starvation")
             end
         end

@@ -37,15 +37,14 @@ local function apply_adaptive_sim_profile(g)
         return
     end
 
-    -- Medium-map profile: keep x1/x2 responsive, trade detail for throughput at x3/x4.
     local profiles = {
-        [1] = { eco_slices = 2, stats_stride = 2, max_steps_per_frame = 8 },
-        [2] = { eco_slices = 3, stats_stride = 3, max_steps_per_frame = 7 },
-        [3] = { eco_slices = 4, stats_stride = 4, max_steps_per_frame = 6 },
-        [4] = { eco_slices = 6, stats_stride = 6, max_steps_per_frame = 5 },
+        [1] = { stats_stride = 2, max_steps_per_frame = 8 },
+        [2] = { stats_stride = 4, max_steps_per_frame = 6 },
+        [3] = { stats_stride = 8, max_steps_per_frame = 4 },
+        [4] = { stats_stride = 16, max_steps_per_frame = 2 },
     }
     local p = profiles[scale] or profiles[1]
-    g.sim.eco_slices = p.eco_slices
+    g.sim.eco_slices = 6
     g.sim.stats_stride = p.stats_stride
     g.sim.max_steps_per_frame = p.max_steps_per_frame
     g.sim.max_accumulator = g.sim.step_dt * (g.sim.max_steps_per_frame + 1)

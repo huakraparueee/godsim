@@ -7,6 +7,7 @@ local map_renderer = require("src.core.map_renderer")
 local entities = require("src.core.entities")
 local sim = require("src.core.sim")
 local scenarios = require("src.data.scenarios")
+local blackboard = require("src.core.blackboard")
 
 local M = {}
 
@@ -29,6 +30,7 @@ function M.reset(g)
     local scenario = scenarios.get(g.scenario_id)
     local map_size_tiles = world.DEFAULT_MAP_TILES or 256
     g.world = world.new(map_size_tiles, map_size_tiles, M.make_new_seed())
+    blackboard.attach(g.world)
     M.apply_scenario_to_world(g.world, scenario)
 
     local mid_x = g.world.width * 0.5

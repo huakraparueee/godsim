@@ -393,27 +393,4 @@ function sim.update(state, w, dt)
     return steps
 end
 
-function sim.advance_days(state, w, days)
-    local cal = w.calendar or {}
-    local seconds_per_day = cal.seconds_per_day or 1
-    if seconds_per_day <= 0 then
-        seconds_per_day = 1
-    end
-
-    local whole_days = math.max(0, math.floor(days or 0))
-    local total_steps = 0
-
-    for _ = 1, whole_days do
-        local remaining = seconds_per_day
-        while remaining > 0 do
-            local step_dt = math.min(state.step_dt, remaining)
-            sim.step(state, w, step_dt)
-            remaining = remaining - step_dt
-            total_steps = total_steps + 1
-        end
-    end
-
-    return total_steps
-end
-
 return sim
