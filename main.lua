@@ -1,11 +1,11 @@
 --[[
-  Bootstrap: require paths, dev hot-reload (lurker), delegate to src.game.
+  Bootstrap: require paths, dev hot-reload (lurker), delegate to src.main → src.scenes.play.
   Restart the game after changing main.lua or conf.lua.
 ]]
 
 local DEV = true
 
-love.filesystem.setRequirePath("?.lua;?/init.lua;lib/?.lua")
+love.filesystem.setRequirePath("?.lua;?/init.lua;src/libraries/?.lua")
 
 local lurker
 if DEV then
@@ -26,7 +26,7 @@ local function clear_src_modules()
 end
 
 local function bind_game()
-    game = require("src.game")
+    game = require("src.main")
 end
 
 function love.load()

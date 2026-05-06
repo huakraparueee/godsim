@@ -1,5 +1,5 @@
-local rules = require("src.config_entity_event_requirements")
-local dna_ranges = require("src.config_dna_ranges")
+local rules = require("src.data.config_entity_event_requirements")
+local dna_ranges = require("src.data.config_dna_ranges")
 
 local requirements = {}
 

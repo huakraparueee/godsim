@@ -5,7 +5,7 @@
 ]]
 
 local world = {}
-local entity_config = require("src.config_entities")
+local entity_config = require("src.data.config_entities")
 world.TILE_METERS = 100
 local UI_EVENT_LOG_MAX = 8
 local UI_EVENT_LOG_KINDS = {

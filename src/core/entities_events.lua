@@ -1,4 +1,4 @@
-local world = require("src.world")
+local world = require("src.core.world")
 local events = {}
 local DAYS_PER_YEAR = 365
 

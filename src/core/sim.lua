@@ -3,10 +3,10 @@
   Owns accumulator and calls subsystem updates at stable step size.
 ]]
 
-local entities = require("src.entities")
-local world = require("src.world")
-local entity_events = require("src.entities_events")
-local entities_cfg = require("src.config_entities")
+local entities = require("src.core.entities")
+local world = require("src.core.world")
+local entity_events = require("src.core.entities_events")
+local entities_cfg = require("src.data.config_entities")
 
 local sim = {}
 

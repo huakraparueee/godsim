@@ -6,11 +6,11 @@
 ]]
 
 local entities = {}
-local world = require("src.world")
-local config = require("src.config_entities")
-local entity_events = require("src.entities_events")
-local dna_ranges = require("src.config_dna_ranges")
-local requirements = require("src.entity_requirements")
+local world = require("src.core.world")
+local config = require("src.data.config_entities")
+local entity_events = require("src.core.entities_events")
+local dna_ranges = require("src.data.config_dna_ranges")
+local requirements = require("src.core.entity_requirements")
 local find_shelter_by_id
 local CHILD_SURVIVAL_AGE_DAYS = 5 * 365
 local CHILD_HUNGER_RATE_FACTOR = 0.5
