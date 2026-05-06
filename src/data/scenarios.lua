@@ -46,6 +46,22 @@ scenarios.definitions = {
             random = 4,
         },
     },
+    -- Phase 2 DoD helper: soak test with ~500 units (FPS will vary by machine).
+    stress_500 = {
+        id = "stress_500",
+        name = "Stress (500 entities)",
+        description = "Population soak; monitor debug overlay.",
+        modifiers = {
+            fertility = 1.0,
+            rainfall = 1.0,
+            heat = 1.0,
+        },
+        spawns = {
+            male = 25,
+            female = 25,
+            random = 450,
+        },
+    },
 }
 
 function scenarios.get(id)
@@ -53,7 +69,7 @@ function scenarios.get(id)
 end
 
 function scenarios.list_ids()
-    return { "balanced", "lush_age", "arid_age" }
+    return { "balanced", "lush_age", "arid_age", "stress_500" }
 end
 
 return scenarios

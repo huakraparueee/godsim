@@ -27,7 +27,7 @@ end
 
 function M.reset(g)
     local scenario = scenarios.get(g.scenario_id)
-    local map_size_tiles = math.floor(world.meters_to_tiles(10000))
+    local map_size_tiles = world.DEFAULT_MAP_TILES or 256
     g.world = world.new(map_size_tiles, map_size_tiles, M.make_new_seed())
     M.apply_scenario_to_world(g.world, scenario)
 
@@ -51,9 +51,16 @@ function M.reset(g)
     g.sim = sim.new({
         step_dt = 1 / 20,
         max_steps_per_frame = 8,
+        eco_slices = 3,
+        stats_stride = 3,
     })
     g.selected_object = nil
     g.message = string.format("GodSim — %s", scenario.name)
+    g.overlay_canvas = nil
+    g.overlay_canvas_coarse = nil
+    g.vis_overlay_dirty = true
+    g.vis_overlay_coarse_dirty = true
+    g._overlay_tick_cadence = 0
 end
 
 return M

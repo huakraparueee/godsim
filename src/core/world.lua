@@ -7,6 +7,8 @@
 local world = {}
 local entity_config = require("src.data.config_entities")
 world.TILE_METERS = 100
+-- Default play map size (Phase 1 DoD: 256×256 tiles).
+world.DEFAULT_MAP_TILES = 256
 local UI_EVENT_LOG_MAX = 8
 local UI_EVENT_LOG_KINDS = {
     birth = true,

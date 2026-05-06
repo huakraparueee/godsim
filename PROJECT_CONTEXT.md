@@ -7,9 +7,11 @@
 ## 1) Product Vision & Pillars
 
 ### Vision
+
 เกมแนว God Simulator แบบ Sandbox Pixel Art ผู้เล่นเป็นผู้ควบคุมโลกทางอ้อมผ่านพลังพระเจ้า แล้วดูระบบจำลองสิ่งมีชีวิตตอบสนองแบบต่อเนื่อง
 
 ### Design Pillars
+
 1. **Systemic Sandbox**: ระบบต่าง ๆ ต้องโต้ตอบกันเองจนเกิดเหตุการณ์ใหม่
 2. **Readable Chaos**: วุ่นวายได้ แต่ผู้เล่นอ่านสถานการณ์ทัน (ผ่าน UI/สี/feedback)
 3. **Performance First**: รองรับจำนวนยูนิตสูงแบบลื่นไหล
@@ -30,15 +32,17 @@
 ## 3) Runtime & Loop Contract
 
 ### Main Loop (Target)
+
 - `love.update(dt)` ทำงานเป็นลำดับ:
-  1) input
-  2) simulation tick
-  3) entity updates
-  4) events/powers resolution
-  5) render prep
+  1. input
+  2. simulation tick
+  3. entity updates
+  4. events/powers resolution
+  5. render prep
 - `love.draw()` วาดแบบ read-only จาก state ปัจจุบัน (ไม่แก้ logic state ใน draw)
 
 ### Time Model
+
 - ใช้ **hybrid timestep**:
   - simulation หลัก: fixed step (`sim_dt = 1/20`)
   - rendering / camera / interpolation: variable `dt`
@@ -49,6 +53,7 @@
 ## 4) Data Contracts (MVP)
 
 ### TileDef (ค่าคงที่ตามชนิดพื้น)
+
 ```lua
 TileDef = {
   id = "grass",
@@ -60,6 +65,7 @@ TileDef = {
 ```
 
 ### TileInstance (ต่อช่องในแผนที่)
+
 ```lua
 Tile = {
   type_id = "grass",
@@ -71,6 +77,7 @@ Tile = {
 ```
 
 ### DNA
+
 ```lua
 DNA = {
   move_speed = 1.0,
@@ -82,6 +89,7 @@ DNA = {
 ```
 
 ### Entity
+
 ```lua
 Entity = {
   id = 1,
@@ -98,6 +106,7 @@ Entity = {
 ```
 
 ### WorldState
+
 ```lua
 WorldState = {
   seed = 12345,
@@ -115,24 +124,29 @@ WorldState = {
 ## 5) Module API Contracts (ต้องมีก่อนเขียนจริง)
 
 ### `src/world.lua`
+
 - `world.new(width, height, seed) -> WorldState`
 - `world.get_tile(world, gx, gy) -> Tile`
 - `world.set_tile_type(world, gx, gy, type_id)`
 - `world.brush(world, cx, cy, radius, painter_fn)`
 
 ### `src/entities.lua`
+
 - `entities.spawn(world, x, y, dna?) -> entity_id`
 - `entities.kill(world, entity_id, reason?)`
 - `entities.update(world, dt)`
 
 ### `src/sim.lua`
+
 - `sim.update(world, dt)` (internal fixed-step accumulator)
 - `sim.step(world, sim_dt)` (food grow, fire spread, reproduction checks)
 
 ### `src/powers.lua`
+
 - `powers.cast(world, power_id, gx, gy, params?) -> ok, err`
 
 ### `src/pathing.lua` (Phase 2+)
+
 - `pathing.request(world, from_gx, from_gy, to_gx, to_gy) -> path_id`
 - `pathing.poll(path_id) -> ready, result`
 
@@ -141,11 +155,13 @@ WorldState = {
 ## 6) AI/FSM Contract (MVP)
 
 Priority จากมากไปน้อย:
+
 1. **Critical**: `Flee` หรือ `Eat` (hunger > 0.8)
 2. **Social**: `Mating` (อายุถึงเกณฑ์ + เงื่อนไขพร้อม)
 3. **Default**: `Wander`
 
 กติกา:
+
 - state transition ทำเฉพาะใน update logic
 - state ทุกตัวต้องมี `enter`, `update`, `exit` (จะเป็น no-op ได้)
 - ห้ามยิง pathfinding ใหม่ทุกเฟรม (ใช้ cooldown / cache)
@@ -159,6 +175,7 @@ Priority จากมากไปน้อย:
 3. **Smite**: ดาเมจจุดเดียว + knockback เล็กน้อย
 
 ทุกพลังต้องมี:
+
 - `cost_faith`
 - `cooldown_sec`
 - `cast_radius`
@@ -169,21 +186,25 @@ Priority จากมากไปน้อย:
 ## 8) Performance Budget & Profiling
 
 ### Target Machine (baseline)
+
 เครื่อง dev หลัก + บันทึกสเปก CPU/GPU/RAM ใน README (เพิ่มภายหลังได้)
 
 ### Frame Budget (60 FPS)
+
 - total frame <= 16.6ms
 - simulation <= 6ms
 - entities <= 5ms
 - render <= 5ms
 
 ### Hard Constraints
+
 - หลีกเลี่ยงการสร้าง table ใหม่ใน loop ร้อน (`love.update`, `sim.step`)
 - tile map ใช้ 1D array และ index function
 - render map ด้วย `SpriteBatch`
 - ใช้ object pooling สำหรับ entity lifecycle
 
 ### Debug Overlay (ต้องมีตั้งแต่ Phase 1)
+
 - FPS
 - entity count
 - sim step ms
@@ -204,13 +225,13 @@ Priority จากมากไปน้อย:
 
 ## 10) Milestones + Definition of Done
 
-| Phase | Deliverables | Definition of Done |
-|---|---|---|
-| 1 | Grid map + zoom/pan + brush | 256x256 tiles, 60 FPS เฉลี่ย >= 55, terraform brush ใช้งานได้ |
-| 2 | Entities + DNA + movement/pathing | spawn 500 entities ได้, state เปลี่ยนตามเงื่อนไข, ไม่ crash 10 นาที |
-| 3 | Ecosystem loop | food growth + eat + reproduce ครบ, population graph เดินต่อเนื่อง |
-| 4 | Save/Load | save/load world เดิมได้, schema_version ใช้งานจริง |
-| 5 | God powers UI + stats | เลือกพลัง/กดใช้ได้ครบ MVP, overlay สถิติอ่านง่าย |
+| Phase | Deliverables                      | Definition of Done                                                  |
+| ----- | --------------------------------- | ------------------------------------------------------------------- |
+| 1     | Grid map + zoom/pan + brush       | 256x256 tiles, 60 FPS เฉลี่ย >= 55, terraform brush ใช้งานได้       |
+| 2     | Entities + DNA + movement/pathing | spawn 500 entities ได้, state เปลี่ยนตามเงื่อนไข, ไม่ crash 10 นาที |
+| 3     | Ecosystem loop                    | food growth + eat + reproduce ครบ                                   |
+| 4     | Save/Load                         | save/load world เดิมได้, schema_version ใช้งานจริง                  |
+| 5     | God powers UI + stats             | เลือกพลัง/กดใช้ได้ครบ MVP, overlay สถิติอ่านง่าย                    |
 
 ---
 
@@ -222,7 +243,7 @@ Priority จากมากไปน้อย:
 4. [x] ทำ camera: pan/zoom + bounds clamp
 5. [x] ทำ terraform brush (เปลี่ยน type tile แบบ radius)
 6. [x] เพิ่ม debug overlay + frame timings
-7. [ ] ทำ smoke test: run 5 นาที ไม่มี error
+7. [x] ทำ smoke test: run 5 นาที ไม่มี error *(ยืนยันแบบใช้มือกับ `love .` + สถานการณ์ Stress 500; ไม่มี automated soak ใน repo)*
 
 ---
 
@@ -238,20 +259,30 @@ Priority จากมากไปน้อย:
 
 ## 13) Decisions Locked (Phase 2 Baseline)
 
-- **Pathfinding**: ใช้ `A* + Steering (Local Avoidance)`
+- **Pathfinding (target)**: แผนใช้ `A* + Steering` — ในโค้ดปัจจุบันเป็น **steering ไปยังเป้าหมาย + สแกนไทล์รอบตัว**; ยังไม่มีโมดูล `pathing.lua` แบบ request/poll ตามสเปก §5
 - **Map Boundary**: ใช้ `Bounded Map` (ไม่มี world wrap)
 - **Reproduction Model**: ใช้ `Stochastic`
 - **UI Approach**: ใช้ `Immediate Mode UI` (lightweight, pure LÖVE compatible)
 
 ---
 
-## 14) Current Status
+## 14) Phase 1–3 closure (verified & closed)
+
+| Phase | สถานะ | หมายเหตุการยืนยัน |
+| ----- | ----- | ------------------ |
+| **1** | ปิดแล้ว | แผนที่เริ่มต้น **256×256** (`world.DEFAULT_MAP_TILES`), `SpriteBatch` ผ่าน `map_renderer`, camera pan/zoom (`play` + `camera`), terraform brush (`terraform` + `world.brush`), overlay มุมซ้ายล่าง (FPS, entities, sim/render ms, GC) |
+| **2** | ปิดแล้ว | Entities + DNA + อัปเดต/`spawn`/`kill` ใน `entities.lua`; state machine หลายโหมด; สถานการณ์ **`stress_500`** = 500 ยูนิตสำหรับ soak; เส้นทาง = steering ไม่ใช่ไฟล์ `pathing.lua` แยก |
+| **3** | ปิดแล้ว | ห่วงนิเวศใน `sim.step` (โตของอาหาร/ทรัพยากรไทล์) + กินหลายช่องทาง + `try_reproduce` ใน `entities.lua` |
+
+ความละเอียด Phase 1 DoD เรื่อง “60 FPS เฉลี่ย ≥ 55” ขึ้นกับเครื่อง — ใช้ overlay วัดขณะเล่นได้
+
+---
+
+## 15) Current Status
 
 - [x] Bootstrap (`main.lua`, `conf.lua`)
 - [x] Hot reload (`lurker`, `lume`)
-- [x] `src/world.lua` (P1-T1 complete)
-- [x] `src/entities.lua` (Phase 2 starter: spawn/update baseline)
-- [x] `src/sim.lua` (Phase 2 starter: fixed-step skeleton)
-- [x] Terraform brush (P1-T5 complete)
-- [x] Debug overlay (P1-T6 complete)
-- [ ] Phase 1 DoD pass
+- [x] Phase 1 grid / camera / brush / debug overlay
+- [x] Phase 2 entities + scenarios รวม soak `stress_500`
+- [x] Phase 3 ecosystem loop (food ↔ eat ↔ reproduce) ใน `sim` + `entities`
+- [ ] Phase 4 Save/Load (ถัดไปตาม §9)

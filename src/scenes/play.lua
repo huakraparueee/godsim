@@ -14,7 +14,91 @@ local terraform = require("src.core.terraform")
 local ui_menus = require("src.ui.menus")
 local event_log = require("src.ui.event_log")
 local world_draw = require("src.core.world_draw")
+local world_visual_sync = require("src.core.world_visual_sync")
 local hud = require("src.ui.hud")
+
+local function clamp_time_scale(scale)
+    local s = math.floor((scale or 1) + 0.5)
+    if s < 1 then
+        return 1
+    end
+    if s > 4 then
+        return 4
+    end
+    return s
+end
+
+local function apply_adaptive_sim_profile(g)
+    if not g.sim then
+        return
+    end
+    local scale = clamp_time_scale(g.time_scale)
+    if g._adaptive_last_scale == scale then
+        return
+    end
+
+    -- Medium-map profile: keep x1/x2 responsive, trade detail for throughput at x3/x4.
+    local profiles = {
+        [1] = { eco_slices = 2, stats_stride = 2, max_steps_per_frame = 8 },
+        [2] = { eco_slices = 3, stats_stride = 3, max_steps_per_frame = 7 },
+        [3] = { eco_slices = 4, stats_stride = 4, max_steps_per_frame = 6 },
+        [4] = { eco_slices = 6, stats_stride = 6, max_steps_per_frame = 5 },
+    }
+    local p = profiles[scale] or profiles[1]
+    g.sim.eco_slices = p.eco_slices
+    g.sim.stats_stride = p.stats_stride
+    g.sim.max_steps_per_frame = p.max_steps_per_frame
+    g.sim.max_accumulator = g.sim.step_dt * (g.sim.max_steps_per_frame + 1)
+    g.time_scale = scale
+    g._adaptive_last_scale = scale
+end
+
+local function update_visual_lod_state(g)
+    if not (g and g.camera) then
+        return
+    end
+    local z = g.camera.zoom or 1
+    -- L0 = coarse only, L1 = low detail, L2 = full detail.
+    local prev_lod = g.visual_lod
+    local lod = prev_lod
+    if lod == nil then
+        if z < 1.02 then
+            lod = 0
+        elseif z < 1.22 then
+            lod = 1
+        else
+            lod = 2
+        end
+    end
+
+    if lod == 2 then
+        if z < 1.14 then
+            lod = 1
+        end
+    elseif lod == 1 then
+        if z >= 1.26 then
+            lod = 2
+        elseif z < 0.98 then
+            lod = 0
+        end
+    else
+        if z >= 1.06 then
+            lod = 1
+        end
+    end
+
+    local prev_block = g.visual_coarse_block_tiles
+    local prev_target = g.visual_coarse_target_px
+    local coarse_target_px = (lod == 0) and 4 or 16
+    local next_block = world_visual_sync.compute_coarse_block_tiles(g, coarse_target_px)
+    g.visual_lod = lod
+    g.visual_coarse_target_px = coarse_target_px
+    g.visual_coarse_block_tiles = next_block
+
+    if prev_lod ~= lod or prev_target ~= coarse_target_px or prev_block ~= next_block then
+        world_visual_sync.invalidate(g)
+    end
+end
 
 function M.load()
     love.graphics.setDefaultFilter("nearest", "nearest")
@@ -54,11 +138,15 @@ function M.load()
         fps = 0,
         gc_kb = 0,
     }
+    M._adaptive_last_scale = nil
+    apply_adaptive_sim_profile(M)
     cam.center_on_map(M)
+    update_visual_lod_state(M)
 end
 
 function M.update(dt)
     local update_start = love.timer.getTime()
+    apply_adaptive_sim_profile(M)
     local sim_dt = dt * (M.time_scale or 1)
 
     if not M.camera then
@@ -85,6 +173,7 @@ function M.update(dt)
     M.camera.x = M.camera.x + move_x * speed * dt
     M.camera.y = M.camera.y + move_y * speed * dt
     cam.update_bounds(M)
+    update_visual_lod_state(M)
 
     if M.brush.painting and not M.drag_pan.active then
         terraform.apply_brush_at_mouse(M)
@@ -97,6 +186,8 @@ function M.update(dt)
         M.debug.sim_steps = 0
         M.debug.sim_ms = 0
     end
+
+    world_visual_sync.maybe_sync(M)
 
     local update_elapsed_ms = (love.timer.getTime() - update_start) * 1000
     M.debug.frame_ms = dt * 1000
@@ -123,6 +214,7 @@ function M.draw()
     love.graphics.setColor(1, 1, 1, 1)
     if M.debug then
         M.debug.render_ms = (love.timer.getTime() - render_start) * 1000
+        hud.draw_debug_overlay(M, w, h, f)
     end
 end
 
@@ -133,12 +225,17 @@ function M.keypressed(key, _scancode, _isrepeat)
     if key == "q" then
         M.camera.zoom = cam.clamp(M.camera.zoom * 0.9, M.camera.min_zoom, M.camera.max_zoom)
         cam.update_bounds(M)
+        update_visual_lod_state(M)
     elseif key == "e" then
         M.camera.zoom = cam.clamp(M.camera.zoom * 1.1, M.camera.min_zoom, M.camera.max_zoom)
         cam.update_bounds(M)
+        update_visual_lod_state(M)
     elseif key == "n" then
         session.reset(M)
+        M._adaptive_last_scale = nil
+        apply_adaptive_sim_profile(M)
         cam.center_on_map(M)
+        update_visual_lod_state(M)
     elseif key == "f2" then
         local ids = scenarios.list_ids()
         local idx = 1
@@ -151,7 +248,10 @@ function M.keypressed(key, _scancode, _isrepeat)
         idx = (idx % #ids) + 1
         M.scenario_id = ids[idx]
         session.reset(M)
+        M._adaptive_last_scale = nil
+        apply_adaptive_sim_profile(M)
         cam.center_on_map(M)
+        update_visual_lod_state(M)
     end
 end
 
@@ -162,6 +262,7 @@ function M.wheelmoved(_x, y)
     local factor = (y > 0) and 1.1 or 0.9
     M.camera.zoom = cam.clamp(M.camera.zoom * factor, M.camera.min_zoom, M.camera.max_zoom)
     cam.update_bounds(M)
+    update_visual_lod_state(M)
 end
 
 function M.resize(_w, _h)
@@ -170,11 +271,11 @@ function M.resize(_w, _h)
     end
 end
 
-function M.mousepressed(_x, _y, button)
+function M.mousepressed(x, y, button, _istouch, _presses)
     if button == 3 and M.drag_pan then
         M.drag_pan.active = true
     elseif button == 1 and M.brush then
-        local mx, my = love.mouse.getPosition()
+        local mx, my = x, y
         if ui_menus.handle_sim_control_click(M, mx, my) then
             return
         end

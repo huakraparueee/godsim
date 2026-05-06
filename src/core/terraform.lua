@@ -17,6 +17,7 @@ function M.apply_brush_at_mouse(g)
     local changed = world.brush(g.world, gx, gy, g.brush.radius, g.brush.type_id)
     if changed and changed > 0 then
         g.renderer:rebuild(g.world)
+        g.vis_overlay_dirty = true
     end
 end
 

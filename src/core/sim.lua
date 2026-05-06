@@ -69,8 +69,12 @@ function sim.new(config)
     return {
         step_dt = config.step_dt or (1 / 20),
         max_steps_per_frame = config.max_steps_per_frame or 8,
+        max_accumulator = config.max_accumulator or ((config.step_dt or (1 / 20)) * ((config.max_steps_per_frame or 8) + 1)),
+        eco_slices = config.eco_slices or 2,
+        stats_stride = config.stats_stride or 2,
         accumulator = 0,
         tick = 0,
+        eco_phase = 0,
     }
 end
 
@@ -91,21 +95,53 @@ function sim.step(state, w, dt)
     local heat_mult = env.heat_mult or 1.0
     local seasonal = get_seasonal_factor(w)
     local rabbit_spread = {}
+    local resources = entities_cfg.RESOURCE or {}
+    local eco_slices = math.max(1, math.floor(state.eco_slices or 1))
+    local eco_phase = math.floor(state.eco_phase or 0) % eco_slices
+    local eco_dt = dt * eco_slices
 
-    for i = 1, tile_count do
+    local campfire_tile_boost = {}
+    local buildings = w.buildings or {}
+    local avoid_range = resources.WOLF_CAMPFIRE_AVOID_RANGE or 5.0
+    local avoid_range_i = math.max(1, math.floor(avoid_range + 0.5))
+    local avoid_range2 = avoid_range * avoid_range
+    for bi = 1, #buildings do
+        local b = buildings[bi]
+        if b and b.kind == "campfire" and (not b.under_construction) then
+            local cx = math.floor(b.x or 0)
+            local cy = math.floor(b.y or 0)
+            local min_y = math.max(1, cy - avoid_range_i)
+            local max_y = math.min(w.height, cy + avoid_range_i)
+            local min_x = math.max(1, cx - avoid_range_i)
+            local max_x = math.min(w.width, cx + avoid_range_i)
+            for gy = min_y, max_y do
+                for gx = min_x, max_x do
+                    local dx = gx - (b.x or gx)
+                    local dy = gy - (b.y or gy)
+                    if (dx * dx + dy * dy) <= avoid_range2 then
+                        local idx = world.to_index(w, gx, gy)
+                        if idx then
+                            campfire_tile_boost[idx] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for i = 1 + eco_phase, tile_count, eco_slices do
         local tile = w.tiles[i]
         local def = world.get_tile_def(tile.type_id)
         local fertility = (def and def.fertility) or 0
         local moisture = tile.moisture or 0.5
         local moisture_target = 0.45 * rainfall_mult
-        moisture = moisture + ((moisture_target - moisture) * 0.22 * dt)
+        moisture = moisture + ((moisture_target - moisture) * 0.22 * eco_dt)
         tile.moisture = math.max(0.05, math.min(1.0, moisture))
         local moisture_effect = 0.6 + tile.moisture * 0.9
         local heat_penalty = 1.0 - math.max(0, (heat_mult - 1.0) * 0.25)
-        local resources = entities_cfg.RESOURCE or {}
-        local fruit_growth = ((resources.APPLE_FRUIT_GROWTH or 0.005) + fertility * 0.006) * fertility_mult * seasonal * moisture_effect * heat_penalty * dt
-        local apple_wood_growth = ((resources.APPLE_WOOD_GROWTH or 0.0015) + fertility * 0.0012) * fertility_mult * seasonal * moisture_effect * dt
-        local pine_wood_growth = ((resources.PINE_WOOD_GROWTH or 0.0022) + fertility * 0.0018) * rainfall_mult * dt
+        local fruit_growth = ((resources.APPLE_FRUIT_GROWTH or 0.005) + fertility * 0.006) * fertility_mult * seasonal * moisture_effect * heat_penalty * eco_dt
+        local apple_wood_growth = ((resources.APPLE_WOOD_GROWTH or 0.0015) + fertility * 0.0012) * fertility_mult * seasonal * moisture_effect * eco_dt
+        local pine_wood_growth = ((resources.PINE_WOOD_GROWTH or 0.0022) + fertility * 0.0018) * rainfall_mult * eco_dt
         local fruit_max = resources.APPLE_FRUIT_MAX or 1.0
         local apple_wood_max = resources.APPLE_WOOD_MAX or 0.8
         local pine_wood_max = resources.PINE_WOOD_MAX or 1.2
@@ -144,14 +180,14 @@ function sim.step(state, w, dt)
                 * breeding_season
                 * habitat_quality
                 * math.max(0, 1 - (current_rabbits / math.max(0.001, habitat_capacity)))
-                * dt
-            local mature = math.min(young, young / math.max(1, resources.WILDLIFE_YOUNG_DAYS or 45) * dt)
-            local aging = math.min(adult, adult / math.max(1, resources.WILDLIFE_ADULT_DAYS or 420) * dt)
-            local old_age_death = math.min(old, old / math.max(1, resources.WILDLIFE_OLD_DAYS or 120) * dt)
+                * eco_dt
+            local mature = math.min(young, young / math.max(1, resources.WILDLIFE_YOUNG_DAYS or 45) * eco_dt)
+            local aging = math.min(adult, adult / math.max(1, resources.WILDLIFE_ADULT_DAYS or 420) * eco_dt)
+            local old_age_death = math.min(old, old / math.max(1, resources.WILDLIFE_OLD_DAYS or 120) * eco_dt)
             local ambient_death = current_rabbits
                 * (resources.WILDLIFE_MORTALITY_RATE or 0.0035)
                 * (1 + math.max(0, heat_mult - 1.0) * 0.35)
-                * dt
+                * eco_dt
             local young_share = current_rabbits > 0 and (young / current_rabbits) or 0
             local adult_share = current_rabbits > 0 and (adult / current_rabbits) or 0
             local old_share = current_rabbits > 0 and (old / current_rabbits) or 0
@@ -167,7 +203,7 @@ function sim.step(state, w, dt)
                 next_rabbits = habitat_capacity
             end
             if adult <= 0 and next_rabbits > 0 and next_rabbits < (resources.WILDLIFE_EXTINCTION_THRESHOLD or 0.035) then
-                local extinction_chance = (resources.WILDLIFE_EXTINCTION_CHANCE or 0.04) * dt
+                local extinction_chance = (resources.WILDLIFE_EXTINCTION_CHANCE or 0.04) * eco_dt
                 if rand01() < extinction_chance then
                     young = 0
                     adult = 0
@@ -205,7 +241,7 @@ function sim.step(state, w, dt)
                     end
                 end
                 if #targets > 0 then
-                    local leaving = math.min(next_rabbits - dispersal_threshold, next_rabbits * (resources.WILDLIFE_DISPERSAL_RATE or 0.025) * dt)
+                    local leaving = math.min(next_rabbits - dispersal_threshold, next_rabbits * (resources.WILDLIFE_DISPERSAL_RATE or 0.025) * eco_dt)
                     if leaving > 0 then
                         local leaving_adult = math.min(adult, leaving * 0.75)
                         local leaving_young = math.min(young, leaving - leaving_adult)
@@ -230,7 +266,7 @@ function sim.step(state, w, dt)
             end
             fruit_spawned = fruit_spawned + math.max(0, (tile.apple_fruit or 0) - before_fruit)
         else
-            local decay = 0.02 * dt
+            local decay = 0.02 * eco_dt
             tile.rabbit_young = math.max(0, (tile.rabbit_young or 0) - ((tile.rabbit_young or 0) * decay))
             tile.rabbit_adult = math.max(0, (tile.rabbit_adult or 0) - ((tile.rabbit_adult or 0) * decay))
             tile.rabbit_old = math.max(0, (tile.rabbit_old or 0) - ((tile.rabbit_old or 0) * decay))
@@ -244,28 +280,17 @@ function sim.step(state, w, dt)
                 * (resources.WOLF_REPRO_RATE or 0.0025)
                 * prey_factor
                 * math.max(0, 1 - (current_wolves / math.max(0.001, wolf_capacity)))
-                * dt
+                * eco_dt
             local wolf_mortality = current_wolves
                 * (resources.WOLF_MORTALITY_RATE or 0.002)
                 * (1.2 - math.min(0.7, prey_factor * 0.35))
-                * dt
-            local avoid_range = resources.WOLF_CAMPFIRE_AVOID_RANGE or 5.0
-            local buildings = w.buildings or {}
-            for bi = 1, #buildings do
-                local b = buildings[bi]
-                if b and b.kind == "campfire" and (not b.under_construction) then
-                    local gx, gy = world.to_grid(w, i)
-                    local dx = gx - (b.x or 0)
-                    local dy = gy - (b.y or 0)
-                    if (dx * dx + dy * dy) <= (avoid_range * avoid_range) then
-                        wolf_mortality = wolf_mortality + (current_wolves * 0.10 * dt)
-                        break
-                    end
-                end
+                * eco_dt
+            if campfire_tile_boost[i] then
+                wolf_mortality = wolf_mortality + (current_wolves * 0.10 * eco_dt)
             end
             tile.wolves = math.max(0, math.min(wolf_capacity, current_wolves + wolf_repro - wolf_mortality))
         else
-            tile.wolves = math.max(0, (tile.wolves or 0) - ((tile.wolves or 0) * 0.04 * dt))
+            tile.wolves = math.max(0, (tile.wolves or 0) - ((tile.wolves or 0) * 0.04 * eco_dt))
         end
         if tile.type_id == "forest" then
             tile.pine_wood = math.min(pine_wood_max, (tile.pine_wood or 0) + pine_wood_growth)
@@ -290,20 +315,23 @@ function sim.step(state, w, dt)
             tile.wildlife = total_rabbits
         end
     end
-    for i = 1, tile_count do
-        local tile = w.tiles[i]
-        tile.food = tile.apple_fruit or 0
-        total_food = total_food + tile.food
-        total_apples = total_apples + (tile.apple_fruit or 0)
-        total_wood = total_wood + (tile.apple_wood or 0) + (tile.pine_wood or 0)
-        total_wildlife = total_wildlife + (tile.wildlife or 0)
-        total_wolves = total_wolves + (tile.wolves or 0)
+    local should_refresh_stats = (state.tick % math.max(1, math.floor(state.stats_stride or 1))) == 0
+    if should_refresh_stats then
+        for i = 1, tile_count do
+            local tile = w.tiles[i]
+            tile.food = tile.apple_fruit or 0
+            total_food = total_food + tile.food
+            total_apples = total_apples + (tile.apple_fruit or 0)
+            total_wood = total_wood + (tile.apple_wood or 0) + (tile.pine_wood or 0)
+            total_wildlife = total_wildlife + (tile.wildlife or 0)
+            total_wolves = total_wolves + (tile.wolves or 0)
+        end
+        w.stats.avg_food = (tile_count > 0) and (total_food / tile_count) or 0
+        w.stats.total_apples = total_apples
+        w.stats.total_wood = total_wood
+        w.stats.total_wildlife = total_wildlife
+        w.stats.total_wolves = total_wolves
     end
-    w.stats.avg_food = (tile_count > 0) and (total_food / tile_count) or 0
-    w.stats.total_apples = total_apples
-    w.stats.total_wood = total_wood
-    w.stats.total_wildlife = total_wildlife
-    w.stats.total_wolves = total_wolves
 
     local before_pop = w.stats.population or 0
     local before_births = w.stats.births or 0
@@ -347,11 +375,13 @@ function sim.step(state, w, dt)
     end
 
     state.tick = state.tick + 1
+    state.eco_phase = (eco_phase + 1) % eco_slices
     w.tick = state.tick
 end
 
 function sim.update(state, w, dt)
-    state.accumulator = state.accumulator + dt
+    local max_acc = state.max_accumulator or (state.step_dt * (state.max_steps_per_frame + 1))
+    state.accumulator = math.min(max_acc, state.accumulator + dt)
     local steps = 0
 
     while state.accumulator >= state.step_dt and steps < state.max_steps_per_frame do

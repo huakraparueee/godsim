@@ -159,4 +159,31 @@ function M.draw(g, w, h, f)
     end
 end
 
+function M.draw_debug_overlay(g, screen_w, screen_h, f)
+    if not (g and g.debug and g.world and f) then
+        return
+    end
+    local d = g.debug
+    local total = select(1, entities.count_by_sex(g.world))
+    local line_h = f:getHeight() + 2
+    local lines = {
+        string.format("[debug] FPS %.0f", d.fps or 0),
+        string.format(
+            "entities %d  map %dx%d",
+            total or 0,
+            g.world.width or 0,
+            g.world.height or 0
+        ),
+        string.format("sim %.2f ms  steps %d", d.sim_ms or 0, d.sim_steps or 0),
+        string.format("update %.2f ms  render %.2f ms", d.update_ms or 0, d.render_ms or 0),
+        string.format("GC %.0f KB", d.gc_kb or 0),
+    }
+    local x = 12
+    local y = screen_h - 12 - line_h * #lines
+    love.graphics.setColor(0.55, 0.92, 0.62, 0.92)
+    for i = 1, #lines do
+        love.graphics.print(lines[i], x, y + (i - 1) * line_h)
+    end
+end
+
 return M

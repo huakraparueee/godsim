@@ -5,9 +5,31 @@
 local scenarios = require("src.data.scenarios")
 local session = require("src.core.session")
 local cam = require("src.utils.camera")
+local world_visual_sync = require("src.core.world_visual_sync")
 
 local function point_in_rect(px, py, r)
     return px >= r.x and px <= (r.x + r.w) and py >= r.y and py <= (r.y + r.h)
+end
+
+local SPEED_SCALE_ORDER = { 1, 2, 3, 4 }
+
+local function speed_buttons_in_order(speed_ui)
+    local list = speed_ui.button_list
+    if list and #list > 0 then
+        return list
+    end
+    local legacy = speed_ui.buttons
+    if not legacy then
+        return {}
+    end
+    local out = {}
+    for i = 1, #SPEED_SCALE_ORDER do
+        local b = legacy["speed_" .. SPEED_SCALE_ORDER[i]]
+        if b then
+            out[#out + 1] = b
+        end
+    end
+    return out
 end
 
 local M = {}
@@ -65,12 +87,13 @@ end
 function M.build_speed_menu()
     local ui = {
         panel = { x = 40, y = 480, w = 260, h = 78 },
-        buttons = {},
+        -- Ordered list for stable hit-testing (avoid pairs() order).
+        button_list = {},
     }
-    local scales = { 1, 7, 14, 30 }
+    local scales = { 1, 2, 3, 4 }
     local x = 54
     for _, s in ipairs(scales) do
-        ui.buttons["speed_" .. s] = {
+        ui.button_list[#ui.button_list + 1] = {
             x = x,
             y = 512,
             w = 54,
@@ -92,18 +115,27 @@ function M.build_scenario_menu()
 end
 
 function M.handle_speed_menu_click(g, mx, my)
-    if not (g.speed_ui and g.speed_ui.buttons) then
+    local speed_ui = g.speed_ui
+    if not (speed_ui and speed_ui.panel) then
         return false
     end
-    for _, button in pairs(g.speed_ui.buttons) do
-        if point_in_rect(mx, my, button) then
-            if button.action == "set_speed" then
-                g.time_scale = button.scale
-            end
+    if not point_in_rect(mx, my, speed_ui.panel) then
+        return false
+    end
+    local list = speed_buttons_in_order(speed_ui)
+    if #list == 0 then
+        return true
+    end
+    for i = 1, #list do
+        local button = list[i]
+        if point_in_rect(mx, my, button) and button.action == "set_speed" then
+            g.time_scale = button.scale
+            world_visual_sync.invalidate(g)
             return true
         end
     end
-    return false
+    -- Click was on the panel chrome / padding: consume so we don't pick entities or paint.
+    return true
 end
 
 function M.handle_scenario_menu_click(g, mx, my)
@@ -220,7 +252,9 @@ function M.draw_speed_menu(g)
     love.graphics.rectangle("line", g.speed_ui.panel.x, g.speed_ui.panel.y, g.speed_ui.panel.w, g.speed_ui.panel.h, 6, 6)
     love.graphics.print("Time Speed", g.speed_ui.panel.x + 10, g.speed_ui.panel.y + 10)
 
-    for _, button in pairs(g.speed_ui.buttons) do
+    local list = speed_buttons_in_order(g.speed_ui)
+    for i = 1, #list do
+        local button = list[i]
         local active = (g.time_scale == button.scale)
         if active then
             love.graphics.setColor(0.22, 0.56, 0.34, 0.95)
