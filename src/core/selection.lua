@@ -2,7 +2,7 @@
   Selected object helpers, shelter queries, building summaries, reproduction HUD data.
 ]]
 
-local entities = require("src.core.entities")
+local entities = require("src.core.entities.main")
 local entity_config = require("src.data.config_entities")
 local entity_requirements = require("src.core.entity_requirements")
 

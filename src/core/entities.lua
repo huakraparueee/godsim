@@ -2073,11 +2073,6 @@ function entities.update(w, dt)
 
             try_wolf_attack(w, e, dt)
 
-            if e.hunger < 40 then
-                local damage = (40 - e.hunger) * config.HEALTH_DECAY_FROM_HUNGER * dt
-                e.health = math.max(0, e.health - damage)
-            end
-
             -- Slow attribute drift: hard hunger weakens strength, living age increases knowledge.
             local profile = get_dna_profile(e.sex)
             local strength_loss = 0
@@ -2103,16 +2098,11 @@ function entities.update(w, dt)
             e.x = math.max(1.0, math.min(map_w - 0.001, e.x))
             e.y = math.max(1.0, math.min(map_h - 0.001, e.y))
 
-            local starve_threshold = config.STARVE_THRESHOLD
-            if (e.age or 0) < CHILD_SURVIVAL_AGE_DAYS then
-                starve_threshold = math.max(0, starve_threshold - CHILD_STARVE_THRESHOLD_BONUS)
-            end
-
             if e.age >= config.MAX_AGE then
                 entities.kill(w, e.id, "old_age")
             elseif e.health <= 0 then
                 entities.kill(w, e.id, "starvation")
-            elseif e.hunger <= starve_threshold then
+            elseif e.hunger <= 0 then
                 entities.kill(w, e.id, "starvation")
             end
         end

@@ -4,7 +4,7 @@
 
 local world = require("src.core.world")
 local map_renderer = require("src.core.map_renderer")
-local entities = require("src.core.entities")
+local entities = require("src.core.entities.main")
 local sim = require("src.core.sim")
 local scenarios = require("src.data.scenarios")
 local blackboard = require("src.core.blackboard")

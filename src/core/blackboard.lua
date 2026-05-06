@@ -28,6 +28,7 @@ function blackboard.attach(w)
     board.entities = w.entities
     board.buildings = w.buildings
     board.stats = w.stats
+    board.entity_tasks = ensure_table(board.entity_tasks)
     w.blackboard = board
     return board
 end
@@ -110,6 +111,33 @@ function blackboard.claim_job(job, entity_id, current_tick, ttl_ticks)
     job.claimed_by = entity_id
     job.claim_expires_tick = tick + ttl
     return true
+end
+
+function blackboard.set_entity_task(w, entity_id, task)
+    local board = blackboard.get(w)
+    if not (board and entity_id) then
+        return
+    end
+    board.entity_tasks = ensure_table(board.entity_tasks)
+    board.entity_tasks[entity_id] = task
+end
+
+function blackboard.get_entity_task(w, entity_id)
+    local board = blackboard.get(w)
+    if not (board and entity_id) then
+        return nil
+    end
+    board.entity_tasks = ensure_table(board.entity_tasks)
+    return board.entity_tasks[entity_id]
+end
+
+function blackboard.clear_entity_task(w, entity_id)
+    local board = blackboard.get(w)
+    if not (board and entity_id) then
+        return
+    end
+    board.entity_tasks = ensure_table(board.entity_tasks)
+    board.entity_tasks[entity_id] = nil
 end
 
 return blackboard

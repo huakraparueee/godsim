@@ -170,4 +170,30 @@ function goap.plan_support(ctx)
     return best
 end
 
+function goap.plan_unit_task(ctx)
+    if not ctx then
+        return nil
+    end
+    local hunger = ctx.hunger or 100
+    local trigger = ctx.eat_trigger or 50
+    local needs_self_food = ctx.needs_self_food or (hunger <= trigger)
+    local has_jobs = ctx.has_blackboard_jobs or false
+    if (not needs_self_food) and (not has_jobs) then
+        return nil
+    end
+
+    local food_priority = (trigger - hunger) + (needs_self_food and 15 or 0)
+    local job_priority = has_jobs and 10 or -math.huge
+    if needs_self_food and (food_priority >= job_priority) then
+        return {
+            intent = "self_food",
+            score = food_priority,
+        }
+    end
+    return {
+        intent = "blackboard_job",
+        score = job_priority,
+    }
+end
+
 return goap

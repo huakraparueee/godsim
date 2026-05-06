@@ -2,7 +2,7 @@
   Top/center title, world stats lines, selected object inspector (screen space).
 ]]
 
-local entities = require("src.core.entities")
+local entities = require("src.core.entities.main")
 local entity_config = require("src.data.config_entities")
 local selection = require("src.core.selection")
 local event_log = require("src.ui.event_log")
@@ -89,7 +89,6 @@ function M.draw(g, w, h, f)
                 local residents = selected.residents and #selected.residents or 0
                 local capacity = selected.capacity or 0
                 local food_units = math.floor((selected.food_stock or 0) + 0.5)
-                local wood_units = math.floor((selected.wood_stock or 0) + 0.5)
                 local inside_now = 0
                 if selected.residents then
                     for i = 1, #selected.residents do
@@ -101,7 +100,7 @@ function M.draw(g, w, h, f)
                 end
                 local line4 = string.format("Residents: %d/%d", residents, capacity)
                 local line5 = string.format("Inside now: %d", inside_now)
-                local line6 = string.format("Food: %d  Wood: %d", food_units, wood_units)
+                local line6 = string.format("Food: %d", food_units)
                 local repro = selection.get_shelter_repro_status(g, selected)
                 local line7 = string.format("Repro ready M:%d F:%d", repro.male_ready, repro.female_ready)
                 local resident_names = {}
@@ -138,7 +137,6 @@ function M.draw(g, w, h, f)
                 love.graphics.print(line7, w - f:getWidth(line7) - 24, 320)
                 love.graphics.print(line8, w - f:getWidth(line8) - 24, 344)
             elseif selected.kind == "campfire" then
-                local build_cfg = entity_config.BUILD or {}
                 local line4
                 if selected.under_construction then
                     line4 = string.format(
@@ -147,9 +145,9 @@ function M.draw(g, w, h, f)
                         math.floor((selected.required_wood or 0) + 0.5)
                     )
                 else
-                    line4 = string.format("Rest radius: %.1f tiles", build_cfg.CAMPFIRE_USE_RADIUS or 3.0)
+                    line4 = "Campfire: active"
                 end
-                local line5 = string.format("Recover HP: %.1f/day", build_cfg.CAMPFIRE_HEALTH_RECOVER or 2.0)
+                local line5 = "Purpose: homeless rest point"
                 local line6 = string.format("Purpose: homeless rest point")
                 love.graphics.print(line4, w - f:getWidth(line4) - 24, 248)
                 love.graphics.print(line5, w - f:getWidth(line5) - 24, 272)

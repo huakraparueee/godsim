@@ -3,7 +3,7 @@
   Owns accumulator and calls subsystem updates at stable step size.
 ]]
 
-local entities = require("src.core.entities")
+local entities = require("src.core.entities.main")
 local world = require("src.core.world")
 local entity_events = require("src.core.entities_events")
 local entities_cfg = require("src.data.config_entities")
@@ -139,12 +139,12 @@ function sim.step(state, w, dt)
         tile.moisture = math.max(0.05, math.min(1.0, moisture))
         local moisture_effect = 0.6 + tile.moisture * 0.9
         local heat_penalty = 1.0 - math.max(0, (heat_mult - 1.0) * 0.25)
-        local fruit_growth = ((resources.APPLE_FRUIT_GROWTH or 0.005) + fertility * 0.006) * fertility_mult * seasonal * moisture_effect * heat_penalty * eco_dt
-        local apple_wood_growth = ((resources.APPLE_WOOD_GROWTH or 0.0015) + fertility * 0.0012) * fertility_mult * seasonal * moisture_effect * eco_dt
-        local pine_wood_growth = ((resources.PINE_WOOD_GROWTH or 0.0022) + fertility * 0.0018) * rainfall_mult * eco_dt
-        local fruit_max = resources.APPLE_FRUIT_MAX or 1.0
-        local apple_wood_max = resources.APPLE_WOOD_MAX or 0.8
-        local pine_wood_max = resources.PINE_WOOD_MAX or 1.2
+        local fruit_max = resources.APPLE_FRUIT_MAX or 2
+        local apple_wood_max = resources.APPLE_WOOD_MAX or 1
+        local pine_wood_max = resources.PINE_WOOD_MAX or 1
+        local fruit_respawn_days = resources.APPLE_FRUIT_RESPAWN_DAYS or 3
+        local start_fruit_min = resources.APPLE_START_FRUIT_MIN or 1
+        local start_fruit_max = resources.APPLE_START_FRUIT_MAX or 2
         local wildlife_max = resources.WILDLIFE_MAX or 1.0
 
         local before_fruit = tile.apple_fruit or 0
@@ -152,11 +152,21 @@ function sim.step(state, w, dt)
             tile.has_apple_tree = (tile.apple_fruit or 0) > 0 or (tile.apple_wood or 0) > 0
         end
         if tile.type_id == "forest" and tile.has_apple_tree then
-            tile.apple_fruit = math.min(fruit_max, before_fruit + fruit_growth)
-            tile.apple_wood = math.min(apple_wood_max, (tile.apple_wood or 0) + apple_wood_growth)
+            tile.apple_regrow_cd_days = math.max(0, (tile.apple_regrow_cd_days or 0) - eco_dt)
+            if (tile.apple_fruit or 0) <= 0 then
+                if (tile.apple_regrow_cd_days or 0) <= 0 then
+                    local spawned = start_fruit_min + math.floor(rand01() * math.max(1, (start_fruit_max - start_fruit_min + 1)))
+                    tile.apple_fruit = math.min(fruit_max, spawned)
+                    tile.apple_regrow_cd_days = fruit_respawn_days
+                else
+                    tile.apple_fruit = 0
+                end
+            end
+            tile.apple_wood = math.min(apple_wood_max, (tile.apple_wood or 0))
         else
             tile.apple_fruit = 0
             tile.apple_wood = 0
+            tile.apple_regrow_cd_days = 0
         end
 
         if tile.type_id == "grass" or tile.type_id == "forest" then
@@ -293,7 +303,7 @@ function sim.step(state, w, dt)
             tile.wolves = math.max(0, (tile.wolves or 0) - ((tile.wolves or 0) * 0.04 * eco_dt))
         end
         if tile.type_id == "forest" then
-            tile.pine_wood = math.min(pine_wood_max, (tile.pine_wood or 0) + pine_wood_growth)
+            tile.pine_wood = math.min(pine_wood_max, (tile.pine_wood or 0))
         end
 
     end

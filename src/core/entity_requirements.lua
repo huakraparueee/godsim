@@ -54,15 +54,19 @@ function requirements.grant_knowledge_for_event(event_id, entity, multiplier)
     end
 
     local profile = get_profile(entity)
-    local knowledge_gain = (tonumber(rule.knowledge_gain) or 0) * applied_multiplier
-    if knowledge_gain > 0 then
+    local knowledge_gain = 0
+    local raw_knowledge_gain = (tonumber(rule.knowledge_gain) or 0) * applied_multiplier
+    if raw_knowledge_gain > 0 then
+        -- STR/KNOW are permanent power stats: each successful gain is at least +1.
+        knowledge_gain = math.max(1, math.floor(raw_knowledge_gain + 0.5))
         local current = entity.knowledge or 0
         local max_knowledge = (profile.knowledge and profile.knowledge.max) or 100
         entity.knowledge = clamp(current + knowledge_gain, 0, max_knowledge)
     end
 
-    local strength_gain = (tonumber(rule.strength_gain) or 0) * applied_multiplier
-    if strength_gain > 0 then
+    local raw_strength_gain = (tonumber(rule.strength_gain) or 0) * applied_multiplier
+    if raw_strength_gain > 0 then
+        local strength_gain = math.max(1, math.floor(raw_strength_gain + 0.5))
         local current = entity.strength or 0
         local min_strength = (profile.strength and profile.strength.min) or 0
         local max_strength = (profile.strength and profile.strength.max) or 100

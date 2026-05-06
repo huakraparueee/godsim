@@ -37,6 +37,7 @@ local default_tile_state = {
     food = 0.0,
     has_apple_tree = false,
     apple_fruit = 0.0,
+    apple_regrow_cd_days = 0,
     apple_wood = 0.0,
     pine_wood = 0.0,
     wildlife = 0.0,
@@ -77,18 +78,21 @@ local function reset_tile_resources_for_type(tile, type_id)
     tile.apple_fruit = 0
     tile.apple_wood = 0
     tile.pine_wood = 0
+    tile.apple_regrow_cd_days = 0
     tile.food = 0
 
     if type_id == "forest" then
         tile.has_apple_tree = rand01() < (resource_cfg.APPLE_TREE_DENSITY or 0.70)
         if tile.has_apple_tree then
             if rand01() < (resource_cfg.APPLE_START_FRUIT_CHANCE or 0.50) then
-                tile.apple_fruit = 0.12 + (rand01() * 0.2)
+                local min_fruit = resource_cfg.APPLE_START_FRUIT_MIN or 1
+                local max_fruit = resource_cfg.APPLE_START_FRUIT_MAX or 2
+                tile.apple_fruit = min_fruit + math.floor(rand01() * math.max(1, (max_fruit - min_fruit + 1)))
                 tile.food = tile.apple_fruit
             end
-            tile.apple_wood = 0.24 + (rand01() * 0.22)
+            tile.apple_wood = 1
         end
-        tile.pine_wood = 0.36 + (rand01() * 0.45)
+        tile.pine_wood = 1
     end
 end
 
@@ -415,6 +419,7 @@ function world.new(width, height, seed)
             rabbit_old = default_tile_state.rabbit_old,
             wolves = default_tile_state.wolves,
             fire = default_tile_state.fire,
+            apple_regrow_cd_days = 0,
         }
     end
 
@@ -425,12 +430,15 @@ function world.new(width, height, seed)
             w.tiles[i].has_apple_tree = rng() < ((entity_config.RESOURCE or {}).APPLE_TREE_DENSITY or 0.70)
             if w.tiles[i].has_apple_tree then
                 if rng() < ((entity_config.RESOURCE or {}).APPLE_START_FRUIT_CHANCE or 0.50) then
-                    w.tiles[i].apple_fruit = 0.12 + (rng() * 0.2)
+                    local res = entity_config.RESOURCE or {}
+                    local min_fruit = res.APPLE_START_FRUIT_MIN or 1
+                    local max_fruit = res.APPLE_START_FRUIT_MAX or 2
+                    w.tiles[i].apple_fruit = min_fruit + math.floor(rng() * math.max(1, (max_fruit - min_fruit + 1)))
                     w.tiles[i].food = w.tiles[i].apple_fruit
                 end
-                w.tiles[i].apple_wood = 0.24 + (rng() * 0.22)
+                w.tiles[i].apple_wood = 1
             end
-            w.tiles[i].pine_wood = 0.36 + (rng() * 0.45)
+            w.tiles[i].pine_wood = 1
         end
     end
 

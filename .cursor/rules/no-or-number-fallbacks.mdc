@@ -1,0 +1,31 @@
+---
+description: Avoid implicit `or <number>` fallbacks for runtime values
+alwaysApply: true
+---
+
+# No `or <number>` Fallbacks
+
+Do not use implicit numeric fallbacks like `value = x or 0` or `hp = hp or 100` in gameplay/runtime logic.
+
+Why:
+- Hard to debug data flow and `nil` sources.
+- Masks invalid state instead of exposing it.
+- Produces inconsistent behavior across modules.
+
+Required style:
+- Initialize fields explicitly at spawn/creation time.
+- Validate required fields early with guard clauses.
+- Use dedicated normalization helpers with clear names when needed.
+- Keep fallback values in config/constants, not inline `or <number>` expressions.
+
+Examples:
+```lua
+-- BAD
+local hunger = e.hunger or 0
+
+-- GOOD
+if e.hunger == nil then
+    error("entity.hunger is nil")
+end
+local hunger = e.hunger
+```
