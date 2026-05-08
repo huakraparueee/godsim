@@ -14,7 +14,7 @@ function M.format_game_date(w)
     end
     local year = cal.year or 0
     local day_of_year = cal.day_of_year or 1
-    return string.format("Year %d Day %d/365", year, day_of_year)
+    return string.format("%d Years %d Days", year, day_of_year)
 end
 
 function M.format_age_years(age_days)
